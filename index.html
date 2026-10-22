@@ -26,7 +26,10 @@ h2{font-size:20px;margin:6px 0 12px}
 .aviso{background:#fff7d6;border-left:4px solid var(--amar);padding:10px;border-radius:6px;margin:8px 0}
 input[type=text],input[type=number],input[type=date],textarea,select{width:100%;padding:13px;font-size:17px;border:1px solid #c9d1de;border-radius:10px}
 textarea{min-height:140px}
-.fotos img{width:31%;margin:1%;border-radius:8px;aspect-ratio:1;object-fit:cover}
+.fotos{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.fotos .ft{position:relative;width:calc(50% - 4px)}
+.fotos img{width:100%;height:auto;border-radius:8px;display:block}   /* foto INTEIRA (sem recorte) → o carimbo do rodapé aparece */
+.fotos .x{position:absolute;top:6px;right:6px;width:34px;height:34px;border:0;border-radius:50%;background:rgba(192,57,43,.9);color:#fff;font-size:18px}
 #assin{width:100%;height:180px;border:2px dashed #9aa7bd;border-radius:10px;touch-action:none;background:#fff}
 .barra{position:sticky;bottom:0;background:#fff;padding:8px 0;display:flex;gap:8px}.barra .btn{margin:0}
 .prog{height:6px;background:#e4e8f0;border-radius:3px;margin-bottom:12px}.prog div{height:6px;background:var(--az2);border-radius:3px}
@@ -42,7 +45,7 @@ textarea{min-height:140px}
 <script>
 'use strict';
 const SERVIDOR = 'https://script.google.com/macros/s/AKfycbz-lzDXOHPw396P5CxXM3u2Uuu_tyFspxY5d39bw-EZ7xwku3MAgVlIVwqFO8ubZh-0QA/exec';
-const VERSAO_APP = '2026-10-22.5';
+const VERSAO_APP = '2026-10-22.10';
 const RAIO_LISTA_M = 250;           // acessos mais perto que isso aparecem na lista
 const AVISO_DIST_M = 300, JUST_DIST_M = 500;
 
@@ -272,9 +275,9 @@ function foto(tipo, titulo, {min = 1, dica} = {}) {   // min = 0 → pode seguir
   moldura(titulo, d, {dica, valido: () => minhas().length >= Math.max(min, 1) ? true :
     (min ? `Tire pelo menos ${min} foto(s) — faltam ${min - minhas().length}.` : 'Tire a foto ou toque em "Nenhuma foto".')});
   if (!min) $('#semfoto').onclick = () => { S.v.fotos = S.v.fotos.filter(f => f.tipo !== tipo); S.v.passo++; passo(); };
-  const mostra = () => { $('#prev').innerHTML = ''; $('#cont').textContent = `${minhas().length} foto(s)${min ? ` de no mínimo ${min}` : ''} · toque numa foto para apagar`;
-    minhas().forEach(f => { const im = el(`<img src="data:image/jpeg;base64,${f.base64}">`);
-      im.onclick = () => { if (confirm('Apagar esta foto?')) { S.v.fotos = S.v.fotos.filter(x => x !== f); mostra(); } }; $('#prev').appendChild(im); }); };
+  const mostra = () => { $('#prev').innerHTML = ''; $('#cont').textContent = `${minhas().length} foto(s)${min ? ` de no mínimo ${min}` : ''}`;
+    minhas().forEach(f => { const d = el(`<div class="ft"><img src="data:image/jpeg;base64,${f.base64}"><button class="x" title="Apagar">✕</button></div>`);
+      d.querySelector('.x').onclick = () => { if (confirm('Apagar esta foto?')) { S.v.fotos = S.v.fotos.filter(x => x !== f); mostra(); } }; $('#prev').appendChild(d); }); };
   $('#tirar').onclick = () => {        // sem coordenada não tira: a foto precisa sair carimbada
     if (!S.gps) { $('#err').textContent = 'Aguarde o GPS (ative a localização) — a foto precisa sair com as coordenadas.'; return; }
     $('#err').textContent = ''; $('#cam').click(); };
@@ -309,6 +312,16 @@ function cnpjOk(v) { const c = so(v); if (c.length !== 14 || /^(\d)\1+$/.test(c)
   return dv(12) === +c[12] && dv(13) === +c[13]; }
 function idade(iso) { const d = new Date(iso + 'T12:00'), h = new Date(); let a = h.getFullYear() - d.getFullYear();
   if (h < new Date(h.getFullYear(), d.getMonth(), d.getDate())) a--; return a; }
+// data digitada: "01011997", "010197" ou "01/01/97" → ISO; ano de 2 dígitos: até o ano atual = 20xx, senão 19xx (97→1997, 07→2007)
+function isoDeBR(v) {
+  const d = so(v); let dd, mm, aa;
+  if (d.length === 8) [dd, mm, aa] = [d.slice(0, 2), d.slice(2, 4), d.slice(4)];
+  else if (d.length === 6) { [dd, mm] = [d.slice(0, 2), d.slice(2, 4)]; const yy = +d.slice(4); aa = String(yy <= ANO % 100 ? 2000 + yy : 1900 + yy); }
+  else return null;
+  const dt = new Date(+aa, +mm - 1, +dd);
+  return (dt.getFullYear() === +aa && dt.getMonth() === +mm - 1 && dt.getDate() === +dd) ? `${aa}-${mm}-${dd}` : null;   // barra 31/02 etc.
+}
+const mascaraData = s => { const d = so(s).slice(0, 8); return d.length > 4 ? `${d.slice(0, 2)}/${d.slice(2, 4)}/${d.slice(4)}` : d.length > 2 ? `${d.slice(0, 2)}/${d.slice(2)}` : d; };
 const num = v => { let s = String(v ?? '').trim(); if (!s) return NaN; if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.'); return Number(s); };
 const brl = n => n.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
 const SM2 = 3242;                      // 2 salários mínimos 2026
@@ -320,17 +333,23 @@ const EST_CIVIL = ['Solteiro', 'Casado', 'União Estável', 'Divorciado', 'Viúv
 const casado = e => e === 'Casado' || e === 'União Estável';
 const PF = r => r.pf_pj === 'Física', PJ = r => r.pf_pj === 'Jurídica', SO = r => PF(r) && r.socio_aceitou === 'Sim';
 const ANO = new Date().getFullYear();
-function pessoa(p, rot, quando, nomeObrig = true) {   // nome → documentos (CPF, RG, nascimento) ou motivo → telefone
-  const temNome = r => quando(r) && r[p + '_nome'] !== NAO_INF, doc = r => temNome(r) && r[p + '_doc'] === 'Sim';
+// cada dado pessoal tem o botão "Não quis informar"; no fim a situação (todos / parcial / nenhum) sai sozinha → situacaoDados()
+const NAO_QUIS = 'Não quis informar';
+function pessoa(p, rot, quando, nomeObrig = true) {   // nome → CPF → RG → nascimento → telefone
+  const temNome = r => quando(r) && r[p + '_nome'] !== NAO_QUIS;
   return [
-    {id: p + '_nome', tipo: 'nome', titulo: `Nome completo — ${rot}`, quando, naoInf: nomeObrig ? null : NAO_INF},
-    {id: p + '_doc', tipo: 'escolha', titulo: `Informou os documentos? (${rot})`, op: ['Sim', 'Não quis / não tinha'], quando: temNome},
-    {id: p + '_cpf', tipo: 'cpf', titulo: `CPF — ${rot}`, quando: doc},
-    {id: p + '_rg', tipo: 'rg', titulo: `RG nº — ${rot}`, quando: doc, naoInf: NAO_INF},
-    {id: p + '_nasc', tipo: 'nasc', titulo: `Data de nascimento — ${rot}`, quando: doc},
-    {id: p + '_motivo', tipo: 'texto', titulo: `Por que não informou os documentos? (${rot})`, quando: r => temNome(r) && r[p + '_doc'] === 'Não quis / não tinha'},
-    {id: p + '_tel', tipo: 'tel', titulo: `Telefone (WhatsApp) — ${rot}`, quando: temNome, naoInf: NAO_INF},
+    {id: p + '_nome', tipo: 'nome', titulo: `Nome completo — ${rot}`, quando, naoInf: nomeObrig ? null : NAO_QUIS, pessoal: !nomeObrig},
+    {id: p + '_cpf', tipo: 'cpf', titulo: `CPF — ${rot}`, quando: temNome, naoInf: NAO_QUIS, pessoal: true},
+    {id: p + '_rg', tipo: 'rg', titulo: `RG nº — ${rot}`, quando: temNome, naoInf: NAO_QUIS, pessoal: true},
+    {id: p + '_nasc', tipo: 'nasc', titulo: `Data de nascimento — ${rot}`, quando: temNome, naoInf: NAO_QUIS, pessoal: true},
+    {id: p + '_tel', tipo: 'tel', titulo: `Telefone (WhatsApp) — ${rot}`, quando: temNome, naoInf: NAO_QUIS, pessoal: true},
   ];
+}
+function situacaoDados(r) {            // só conta os campos de dado pessoal que apareceram nesta ficha
+  const campos = Q.filter(q => q.pessoal && ativa(q.id)), recusou = campos.filter(q => r[q.id] === NAO_QUIS);
+  const sit = !campos.length ? '' : !recusou.length ? 'Respondeu todos os dados pessoais'
+    : recusou.length === campos.length ? 'Não quis informar os dados pessoais' : 'Respondeu parcialmente os dados pessoais';
+  return {sit, recusou: recusou.map(q => q.titulo.replace(' — ', ' (') + ')')};
 }
 const Q = [
   {id: 'pf_pj', tipo: 'escolha', titulo: 'É pessoa física ou jurídica?', op: ['Física', 'Jurídica']},
@@ -340,7 +359,7 @@ const Q = [
   {id: 'estado_civil', tipo: 'escolha', titulo: 'Estado civil do titular', op: EST_CIVIL, quando: PF},
   ...pessoa('conj', 'cônjuge/companheiro(a)', r => PF(r) && casado(r.estado_civil), false),
   {id: 'razao', tipo: 'texto', titulo: 'Razão social', quando: PJ, min: 3},
-  {id: 'cnpj', tipo: 'cnpj', titulo: 'CNPJ', quando: PJ},
+  {id: 'cnpj', tipo: 'cnpj', titulo: 'CNPJ', quando: PJ, naoInf: NAO_QUIS, pessoal: true},
   {id: 'regime', tipo: 'escolha', titulo: 'Regime tributário (declarado)', quando: PJ,
    op: ['MEI (Microempreendedor Individual)', 'ME (Microempresa)', 'EPP (Empresa de Pequeno Porte)', 'Outro', NAO_INF]},
   {id: 'simples', tipo: 'escolha', titulo: 'Optante do Simples Nacional?', op: ['Sim', 'Não', NAO_INF], quando: PJ},
@@ -349,9 +368,8 @@ const Q = [
   ...pessoa('repc', 'cônjuge do representante', r => PJ(r) && casado(r.rep_estado_civil), false),
   {id: 'dap', tipo: 'escolha', titulo: 'Possui declaração de aptidão ao PRONAF (DAP/CAF)?', op: SN_INF, quando: PF},
   {id: 'cadunico', tipo: 'escolha', titulo: 'Está inscrito no Cadastro Único (CadÚnico) ou equivalente?', op: SN_INF, quando: PF},
-  {id: 'docs', tipo: 'foto', titulo: 'Fotos dos DOCUMENTOS (RG, CNH, CPF, matrícula, escritura, conta…)',
-   min: r => ['tit', 'rep'].some(p => r[p + '_doc'] === 'Sim') ? 1 : 0,
-   dica: r => ['tit', 'rep'].some(p => r[p + '_doc'] === 'Sim') ? 'Informou documentos → fotografe pelo menos 1.' : 'Sem documentos informados: pode seguir sem foto.'},
+  {id: 'docs', tipo: 'foto', titulo: 'Fotos dos DOCUMENTOS (RG, CNH, CPF, matrícula, escritura, conta…)', min: 0,
+   dica: 'Fotografe os documentos que a pessoa mostrou. Se não mostrou nenhum, toque em "Nenhuma foto".'},
   // ---- socioeconômica (só pessoa física)
   {id: 'socio_aceitou', tipo: 'escolha', titulo: 'A pessoa ACEITOU responder a ficha SOCIOECONÔMICA?', op: ['Sim', 'Não', 'Não se aplica (não reside no imóvel)'], quando: PF},
   {id: 'socio_motivo', tipo: 'texto', titulo: 'Por que não respondeu a socioeconômica?', quando: r => PF(r) && r.socio_aceitou === 'Não'},
@@ -366,6 +384,11 @@ const Q = [
   {id: 'renda_inf', tipo: 'escolha', titulo: '01.02 Renda familiar bruta TOTAL mensal (somar todas as rendas)', op: ['Informou o valor', 'Não quis informar', 'Não soube informar'], quando: SO},
   {id: 'renda_total', tipo: 'dinheiro', titulo: 'Valor da renda TOTAL mensal da família (R$)', quando: r => SO(r) && r.renda_inf === 'Informou o valor',
    faixa: [0, 100000], dica: 'Valor MENSAL (não anual), somando todas as rendas da casa.'},
+  // renda por pessoa da FUNDIÁRIA: com a renda informada na socio é calculada; senão pergunta AQUI (logo após a recusa da socio
+  // ou após "não quis/não soube informar a renda") — só aparece depois que a socio_aceitou/renda_inf foram respondidas
+  {id: 'renda_pc_pergunta', tipo: 'escolha', titulo: 'Renda familiar POR PESSOA (renda total ÷ moradores; 2 salários = R$ 3.242)',
+   quando: r => PF(r) && perCapita(r) == null && !!r.socio_aceitou && (r.socio_aceitou !== 'Sim' || (!!r.renda_inf && r.renda_inf !== 'Informou o valor')),
+   op: ['Até 2 salários mínimos', 'Acima de 2 salários mínimos', 'Não soube informar', 'Recusou a informar']},
   {id: 'despesas50', tipo: 'escolha', titulo: '01.04 As despesas essenciais (alimentação, moradia, água, energia, saúde e transporte) comprometem mais de 50% da renda familiar?',
    op: ['Sim', 'Não', 'Não sabe informar'], quando: SO, dica: r => perCapita(r) == null ? '' : `Renda por pessoa: R$ ${brl(perCapita(r))} → ${faixaPC(r)}.`},
   {id: 'saude', tipo: 'escolha', titulo: '01.05 Realiza gastos mensais com tratamento de saúde ou medicamentos de uso contínuo?', op: SN, quando: SO},
@@ -405,9 +428,6 @@ const Q = [
   {id: 'socio_obs', tipo: 'texto', titulo: '03 OBSERVAÇÕES (socioeconômica)', multilinha: true, quando: SO, naoInf: 'Sem observações'},
   {id: 'assin_socio', tipo: 'assinatura', titulo: 'Assinatura do DECLARANTE (socioeconômica)', quando: SO},
   {id: 'assin_socio_motivo', tipo: 'texto', titulo: 'Por que o declarante não assinou a socioeconômica?', quando: r => SO(r) && r.assin_socio_nao},
-  // renda por pessoa da FUNDIÁRIA: vem da socio; só pergunta quando a socio não deu o valor
-  {id: 'renda_pc_pergunta', tipo: 'escolha', titulo: 'Renda familiar POR PESSOA (renda total ÷ moradores; 2 salários = R$ 3.242)', quando: r => PF(r) && perCapita(r) == null,
-   op: ['Até 2 salários mínimos', 'Acima de 2 salários mínimos', 'Não soube informar', 'Recusou a informar']},
 ];
 const QI = Object.fromEntries(Q.map(q => [q.id, q]));
 const ativa = id => { const q = QI[id]; return !!q && S.v.r.status === ACEITOU && (!q.quando || q.quando(S.v.r)); };
@@ -431,7 +451,8 @@ function validar(q, v, r) {
     case 'cnpj': if (!cnpjOk(v)) return 'CNPJ inválido: confira os 14 números.'; break;
     case 'rg': if (!/^[0-9]{4,13}[0-9Xx]$/.test(v.replace(/[.\-\s]/g, ''))) return 'RG: de 5 a 14 caracteres (números; o último pode ser X).'; break;
     case 'tel': if (!/^[1-9][0-9][0-9]{8,9}$/.test(so(v))) return 'DDD + número (10 ou 11 números).'; break;
-    case 'nasc': { const a = idade(v); if (!(a >= 16 && a <= 115)) return 'Data impossível (idade tem que ficar entre 16 e 115 anos).'; break; }
+    case 'nasc': { const iso = isoDeBR(v); if (!iso) return 'Data inválida — digite dia, mês e ano (ex.: 01011997 ou 010197).';
+      const a = idade(iso); if (!(a >= 18 && a <= 150)) return 'Data impossível (idade tem que ficar entre 18 e 150 anos).'; break; }
     case 'int': case 'dinheiro': { const n = num(v); if (isNaN(n) || (q.tipo === 'int' && !Number.isInteger(n))) return 'Número inválido.';
       const [a, b] = typeof q.faixa === 'function' ? q.faixa(r) : (q.faixa || [0, 1e9]);
       if (n < a || n > b) return q.msgFaixa || `Valor entre ${a} e ${b}.`; break; }
@@ -445,6 +466,7 @@ function normaliza(q, v) {
   if (q.tipo === 'cnpj') return `${d.slice(0, 2)}.${d.slice(2, 5)}.${d.slice(5, 8)}/${d.slice(8, 12)}-${d.slice(12)}`;
   if (q.tipo === 'tel') return d;
   if (q.tipo === 'rg') return v.replace(/[.\-\s]/g, '').toUpperCase();
+  if (q.tipo === 'nasc') return isoDeBR(v);
   if (q.tipo === 'int' || q.tipo === 'dinheiro') return num(v);
   return v;
 }
@@ -457,14 +479,22 @@ function perguntar(q) {
   if (q.tipo === 'assinatura') return assinatura(q.id, q.titulo);
   if (q.tipo === 'texto' && q.multilinha) return texto(q.id, q.titulo, {dica, multilinha: true, naoInf: q.naoInf, min: q.min});
   const cfg = {nome: {}, texto: {}, cpf: {m: 'numeric', ph: 'só os 11 números'}, cnpj: {m: 'numeric', ph: 'só os 14 números'}, rg: {m: 'text', ph: 'só números'},
-               tel: {m: 'tel', ph: 'DDD + número'}, int: {m: 'numeric'}, dinheiro: {m: 'decimal', ph: '0,00'}, nasc: {t: 'date'}}[q.tipo] || {};
-  const atual = r[q.id] == null || r[q.id] === q.naoInf ? '' : (q.tipo === 'dinheiro' && typeof r[q.id] === 'number' ? brl(r[q.id]) : r[q.id]);
+               tel: {m: 'tel', ph: 'DDD + número'}, int: {m: 'numeric'}, dinheiro: {m: 'decimal', ph: '0,00'}, nasc: {m: 'numeric', ph: 'dd/mm/aaaa — ex.: 01011997'}}[q.tipo] || {};
+  const atual = r[q.id] == null || r[q.id] === q.naoInf ? '' : (q.tipo === 'dinheiro' && typeof r[q.id] === 'number' ? brl(r[q.id]) : (q.tipo === 'nasc' ? dataBR(r[q.id]) : r[q.id]));
+  // data: digita só os números (barras entram sozinhas) ou abre o calendário
+  const cal = q.tipo === 'nasc' ? `<button class="btn sec" id="cal">📅 Escolher no calendário</button><input id="cald" type="date" max="${hoje()}" style="position:absolute;opacity:0;width:1px;height:1px">` : '';
   moldura(q.titulo, `<input id="in" type="${cfg.t || 'text'}" ${cfg.m ? `inputmode="${cfg.m}"` : ''} placeholder="${cfg.ph || ''}" value="${esc(atual)}"
-      ${q.tipo === 'nasc' ? `max="${hoje()}"` : ''} autocomplete="off">` + (q.naoInf ? `<button class="btn sec" id="naoinf">${esc(q.naoInf)}</button>` : ''),
+      autocomplete="off">` + cal + (q.naoInf ? `<button class="btn sec" id="naoinf">${esc(q.naoInf)}</button>` : ''),
     {dica, valido: () => { const v = $('#in').value.trim();
       if (!v) return q.naoInf ? `Preencha ou toque em "${q.naoInf}".` : 'Campo obrigatório.';
       const e = validar(q, v, r); if (e !== true) return e; r[q.id] = normaliza(q, v); return true; }});
   if (q.naoInf) $('#naoinf').onclick = () => { r[q.id] = q.naoInf; S.v.passo++; passo(); };
+  if (q.tipo === 'nasc') {
+    $('#in').oninput = e => { const fim = e.target.value.length === e.target.selectionStart; e.target.value = mascaraData(e.target.value);
+      if (fim) e.target.setSelectionRange(e.target.value.length, e.target.value.length); };
+    $('#cal').onclick = () => { const c = $('#cald'); try { c.showPicker(); } catch (e) { c.focus(); c.click(); } };
+    $('#cald').onchange = e => { if (e.target.value) $('#in').value = dataBR(e.target.value); };
+  }
 }
 const MESES_EXT = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
 const localData = (mun, d = new Date()) => `${mun}/RS, ${d.getDate()} de ${MESES_EXT[d.getMonth()]} de ${d.getFullYear()}`;
@@ -512,7 +542,7 @@ function passo() {
   if (nome === 'foto_aviso') return foto('foto_aviso', 'Foto do aviso deixado');
   if (nome === 'vizinho') return texto('vizinho', 'Informação de vizinho (melhor dia e horário para encontrar)', {naoInf: 'Nenhum vizinho soube informar'});
   if (nome === 'fotos_acesso') return foto('foto_acesso', 'Fotos do ACESSO', {min: 2, dica: 'No mínimo 2 fotos do acesso. Cada foto sai com data, hora e coordenadas.'});
-  if (nome === 'obs') return texto('obs', 'OBSERVAÇÕES DA VISITA', {multilinha: true, min: 30, dica: 'O que aconteceu, com quem falou, retorno combinado…'});
+  if (nome === 'obs') return texto('obs', 'OBSERVAÇÕES DA VISITA', {multilinha: true, min: 10, dica: 'O que aconteceu, com quem falou, retorno combinado…'});
   if (nome === 'pendente') return escolha('pendente', 'Ficou algo pendente para depois?', ['Sim', 'Não']);
   if (nome === 'pendente_o_que') return texto('pendente_o_que', 'O que ficou pendente?');
   if (nome === 'assinatura') return assinatura();
@@ -524,6 +554,7 @@ function passo() {
 function revisao() {
   const r = S.v.r, a = S.v.acesso;
   const quem = r.status !== ACEITOU ? '' : `<br>${esc(r.pf_pj)}: <b>${esc(PF(r) ? r.tit_nome : r.razao)}</b>${PF(r) && r.tit_cpf && ativa('tit_cpf') ? ' · CPF ' + esc(r.tit_cpf) : ''}${PJ(r) ? ' · CNPJ ' + esc(r.cnpj) : ''}` +
+    `<br><b>${esc(situacaoDados(r).sit)}</b>${situacaoDados(r).recusou.length ? ' — não quis informar: ' + esc(situacaoDados(r).recusou.join(', ')) : ''}` +
     (PF(r) ? `<br>Socioeconômica: ${esc(r.socio_aceitou)}${perCapita(r) != null ? ` · R$ ${brl(perCapita(r))} por pessoa (${faixaPC(r)})` : ''}` : '');
   moldura('Revisar e salvar', `<div class="cartao"><b>${esc(a.codigo)}</b> · CT ${r.ct} · ${r.tentativa}ª visita<br>${esc(r.status)} · ${S.v.fotos.length} foto(s)${r.assinatura_svg ? ' · assinado' : ' · sem assinatura'}${quem}<br><small>${esc(r.obs)}</small></div>
     <p class="dica">Ao salvar, a visita fica guardada no celular e é enviada quando tiver internet.</p>`);
@@ -550,11 +581,11 @@ async function salvar() {
   // parte 3: só grava o que está valendo (resposta de tela que deixou de existir ao voltar e trocar não entra)
   const v3 = id => { if (!ativa(id)) return ''; const x = r[id];
     return Array.isArray(x) ? x.join(', ') : (id.endsWith('_nasc') ? dataBR(x) : (x ?? '')); };
-  const ROT = {tit: 'titular', conj: 'cônjuge', rep: 'representante', repc: 'cônjuge do representante'};
   if (st === ACEITOU) Object.assign(visita, {
     'É pessoa física ou jurídica ?': v3('pf_pj'), 'Relação com o imóvel': v3('relacao'), 'Possui matrícula do imóvel ou documento equivalente?': v3('matricula'),
     'Nome completo': v3('tit_nome'), CPF: v3('tit_cpf'), 'RG Nº': v3('tit_rg'), 'Data de nascimento': v3('tit_nasc'), 'Telefone (WhatsApp)': v3('tit_tel'),
-    motivo_sem_documento: Object.entries(ROT).filter(([p]) => v3(p + '_motivo')).map(([p, n]) => `${n}: ${v3(p + '_motivo')}`).join(' | '),
+    'Dados pessoais (situação)': situacaoDados(r).sit,
+    motivo_sem_documento: situacaoDados(r).recusou.length ? 'Não quis informar: ' + situacaoDados(r).recusou.join(', ') : '',
     'Estado civil': v3('estado_civil'), 'Cônjuge/companheiro(a)': v3('conj_nome'), 'CPF do cônjuge': v3('conj_cpf'), 'RG Nº do cônjuge': v3('conj_rg'),
     'Data de nascimento do cônjuge': v3('conj_nasc'), 'Telefone (WhatsApp) do cônjuge': v3('conj_tel'),
     'Razão social': v3('razao'), CNPJ: v3('cnpj'), 'Regime tributário (declarado)': v3('regime'), 'Optante do simples nacional?': v3('simples'),
