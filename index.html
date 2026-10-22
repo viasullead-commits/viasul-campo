@@ -45,7 +45,7 @@ textarea{min-height:140px}
 <script>
 'use strict';
 const SERVIDOR = 'https://script.google.com/macros/s/AKfycbz-lzDXOHPw396P5CxXM3u2Uuu_tyFspxY5d39bw-EZ7xwku3MAgVlIVwqFO8ubZh-0QA/exec';
-const VERSAO_APP = '2026-10-22.16';
+const VERSAO_APP = '2026-10-22.17';
 const RAIO_LISTA_M = 250;           // acessos mais perto que isso aparecem na lista
 const AVISO_DIST_M = 300, JUST_DIST_M = 500;
 
@@ -89,8 +89,22 @@ let S = {token: null, tecnico: null, aparelho: null, dados: null, gps: null, v: 
 // ---------------- GPS contínuo ----------------
 function ligarGPS() {
   if (!navigator.geolocation) return;
-  navigator.geolocation.watchPosition(p => { S.gps = {lat: p.coords.latitude, lon: p.coords.longitude, prec: Math.round(p.coords.accuracy)};
-    if (window.atualizaMapa) window.atualizaMapa(); }, () => {}, {enableHighAccuracy: true, maximumAge: 5000});
+  navigator.geolocation.watchPosition(guardaGPS, () => {}, {enableHighAccuracy: true, maximumAge: 5000});
+}
+function guardaGPS(p) {               // posição + HORA da posição (p/ saber se ficou velha)
+  S.gps = {lat: p.coords.latitude, lon: p.coords.longitude, prec: Math.round(p.coords.accuracy), t: p.timestamp || Date.now()};
+  if (window.atualizaMapa) window.atualizaMapa();
+}
+// foto: aceita posição de até 1 km de precisão e de até 30 s; senão tenta atualizar por 10 s e, se não der, vai com o que tiver (marcado p/ conferir)
+const GPS_PREC_MAX = 1000, GPS_IDADE_MAX = 30;
+const idadeGPS = () => S.gps ? Math.round((Date.now() - (S.gps.t || 0)) / 1000) : null;
+const gpsBom = () => !!S.gps && S.gps.prec <= GPS_PREC_MAX && idadeGPS() <= GPS_IDADE_MAX;
+function avisoGPS(g, quando) {        // o que fica anotado na foto quando a posição não estava boa
+  if (!g || g.lat == null) return 'sem GPS';
+  const idade = Math.round((quando - (g.t || quando)) / 1000), av = [];
+  if (g.prec > GPS_PREC_MAX) av.push(`GPS fraco ±${g.prec} m`);
+  if (idade > GPS_IDADE_MAX) av.push(`posição de ${idade >= 120 ? Math.round(idade / 60) + ' min' : idade + ' s'} atrás`);
+  return av.join(' · ');
 }
 
 // ---------------- telas ----------------
@@ -101,7 +115,31 @@ async function iniciar() {
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
   ligarGPS();
   if (!S.token) return telaLogin();
+  const rasc = await DB.get('rascunho');
+  if (rasc && rasc.v) return telaRascunho(rasc);   // o app fechou no meio de uma visita → oferece continuar
   telaInicio();
+}
+
+// ---------------- rascunho automático: a visita em andamento (com fotos) é guardada a cada tela ----------------
+function salvarRascunho() {
+  if (!S.v) return;
+  const {acesso, dist, r, fotos, passo, inicio, id, copiaSel, copiaItem, copiaAplicada} = S.v;
+  DB.set('rascunho', {v: {acesso, dist, r, fotos, passo, inicio, id, copiaSel, copiaItem, copiaAplicada}, tecnico: S.tecnico, salvo_em: new Date().toISOString()})
+    .catch(() => aviso('Não consegui guardar o rascunho (memória do celular cheia?).', 'erro'));
+}
+const descartarRascunho = () => DB.set('rascunho', null);
+function telaRascunho(rasc) {
+  const v = rasc.v, ps = (() => { S.v = v; const p = PASSOS(); S.v = null; return p; })();
+  $('#hdr').textContent = `${nomeColab(S.tecnico)}`;
+  $('#tela').innerHTML = `<h2>Visita em andamento</h2>
+    <div class="cartao"><b>${esc(v.acesso.codigo)}</b>${v.r.ct ? ' · CT ' + esc(v.r.ct) : ''}${v.r.tentativa ? ' · ' + esc(v.r.tentativa) + 'ª visita' : ''}<br>
+      ${v.r.status ? esc(v.r.status) + ' · ' : ''}${v.fotos.length} foto(s) · parou na tela ${Math.min(v.passo + 1, ps.length)} de ${ps.length}<br>
+      <small>guardada em ${new Date(rasc.salvo_em).toLocaleString('pt-BR')}</small></div>
+    <p class="dica">O app foi fechado antes de salvar esta visita. Tudo o que já tinha sido preenchido, inclusive as fotos, foi guardado.</p>
+    <button class="btn ok" id="cont">Continuar de onde parei</button><button class="btn perigo" id="desc">Descartar esta visita</button>`;
+  $('#cont').onclick = () => { S.v = v; passo(); };
+  $('#desc').onclick = async () => { if (!confirm('Descartar a visita em andamento? O que foi preenchido e as fotos dela serão apagados.')) return;
+    await descartarRascunho(); telaInicio(); };
 }
 
 // colaboradores (valor = nome que o servidor associa ao código; o código tem que ser DESSA pessoa)
@@ -135,6 +173,7 @@ function telaLogin(msg, escolhido) {
 async function trocarColaborador() {   // só com a fila vazia: visita pendente é de quem a fez
   const fila = await DB.filaTodos();
   if (fila.length) return aviso(`Há ${fila.length} visita(s) de ${nomeColab(S.tecnico)} ainda não enviada(s). Envie primeiro (com internet) e depois troque.`, 'erro');
+  if (await DB.get('rascunho')) return aviso('Há uma visita em andamento não salva. Termine ou descarte antes de trocar.', 'erro');
   if (!confirm(`Sair de ${nomeColab(S.tecnico)} e entrar com outro colaborador?`)) return;
   await DB.set('token', null); await DB.set('tecnico', null); S.token = S.tecnico = null;
   telaLogin();
@@ -259,7 +298,8 @@ function moldura(titulo, corpo, {dica = '', valido = () => true} = {}) {
     <h2>${titulo}</h2>${dica ? `<p class="dica">${dica}</p>` : ''}<div id="corpo"></div><div class="erro" id="err"></div>
     <div class="barra"><button class="btn sec" id="volta">Voltar</button><button class="btn" id="seg">Próximo</button></div>`;
   if (typeof corpo === 'string') $('#corpo').innerHTML = corpo; else $('#corpo').appendChild(corpo);
-  $('#volta').onclick = () => { if (S.v.passo === 0) return confirm('Sair desta visita sem salvar?') && telaInicio(); S.v.passo--; passo(); };
+  $('#volta').onclick = async () => { if (S.v.passo === 0) { if (!confirm('Sair desta visita sem salvar?')) return; S.v = null; await descartarRascunho(); return telaInicio(); }
+    S.v.passo--; passo(); };
   $('#seg').onclick = () => { const e = valido(); if (e !== true) { $('#err').textContent = e; return; } S.v.passo++; passo(); };
 }
 
@@ -292,36 +332,52 @@ function gms(v, pos, neg) { const a = Math.abs(v), g = Math.floor(a), m = Math.f
 function carimbar(c, quando, gps) {
   const g = c.getContext('2d'), fs = Math.round(Math.min(c.height, c.width) * 0.042), mg = Math.round(fs * 0.2);   // tamanho medido na foto do campo
   const l1 = `${quando.getDate()} de ${MESES[quando.getMonth()]} de ${quando.getFullYear()} ${hora(quando)}:${dois(quando.getSeconds())}`;
-  const l2 = `${gms(gps.lat, 'N', 'S')} ${gms(gps.lon, 'E', 'W')}`;
+  const l2 = gps && gps.lat != null ? `${gms(gps.lat, 'N', 'S')} ${gms(gps.lon, 'E', 'W')}` : 'GPS indisponível';
   g.font = `${fs}px Roboto, "Segoe UI", Arial, sans-serif`; g.textAlign = 'right'; g.textBaseline = 'bottom';
   g.lineJoin = 'round'; g.lineWidth = Math.max(2, fs / 9); g.strokeStyle = 'rgba(0,0,0,.75)'; g.fillStyle = '#fff';
   [[l2, c.height - mg], [l1, c.height - mg - fs * 1.1]].forEach(([t, y]) => { g.strokeText(t, c.width - mg, y); g.fillText(t, c.width - mg, y); });
 }
 function comprimir(arq) {             // foto → JPEG até 1600 px, carimbada com data/hora e coordenadas do momento
-  const quando = new Date(), gps = {...S.gps};
+  const quando = new Date(), gps = S.gps ? {...S.gps} : null;   // posição na hora em que a foto VOLTA da câmera
   return new Promise(ok => { const img = new Image(); img.onload = () => { const k = Math.min(1, 1600 / Math.max(img.width, img.height));
     const c = document.createElement('canvas'); c.width = img.width * k; c.height = img.height * k; c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
     carimbar(c, quando, gps);
     ok({base64: c.toDataURL('image/jpeg', .85).split(',')[1], mime: 'image/jpeg', tirada_em: quando.toISOString(),
-        gps_lat: gps.lat, gps_lon: gps.lon, gps_precisao_m: gps.prec}); }; img.src = URL.createObjectURL(arq); });
+        gps_lat: gps ? gps.lat : '', gps_lon: gps ? gps.lon : '', gps_precisao_m: gps ? gps.prec : '',
+        gps_idade_s: gps ? Math.round((quando - (gps.t || quando)) / 1000) : '', gps_aviso: avisoGPS(gps, quando)}); }; img.src = URL.createObjectURL(arq); });
 }
 
 function foto(tipo, titulo, {min = 1, dica} = {}) {   // min = 0 → pode seguir sem foto, mas tocando em "Nenhuma foto"
   const minhas = () => S.v.fotos.filter(f => f.tipo === tipo);
   const d = el(`<div><input id="cam" type="file" accept="image/*" capture="environment" style="display:none">
-    <button class="btn" id="tirar">📷 Tirar foto</button>${min ? '' : '<button class="btn sec" id="semfoto">Nenhuma foto</button>'}
+    <button class="btn" id="tirar">📷 Tirar foto</button><div id="gpsbox"></div>${min ? '' : '<button class="btn sec" id="semfoto">Nenhuma foto</button>'}
     <div class="dica" id="cont"></div><div class="fotos" id="prev"></div></div>`);
   moldura(titulo, d, {dica, valido: () => minhas().length >= Math.max(min, 1) ? true :
     (min ? `Tire pelo menos ${min} foto(s) — faltam ${min - minhas().length}.` : 'Tire a foto ou toque em "Nenhuma foto".')});
   if (!min) $('#semfoto').onclick = () => { S.v.fotos = S.v.fotos.filter(f => f.tipo !== tipo); S.v.passo++; passo(); };
   const mostra = () => { $('#prev').innerHTML = ''; $('#cont').textContent = `${minhas().length} foto(s)${min ? ` de no mínimo ${min}` : ''}`;
-    minhas().forEach(f => { const d = el(`<div class="ft"><img src="data:image/jpeg;base64,${f.base64}"><button class="x" title="Apagar">✕</button></div>`);
-      d.querySelector('.x').onclick = () => { if (confirm('Apagar esta foto?')) { S.v.fotos = S.v.fotos.filter(x => x !== f); mostra(); } }; $('#prev').appendChild(d); }); };
-  $('#tirar').onclick = () => {        // sem coordenada não tira: a foto precisa sair carimbada
-    if (!S.gps) { $('#err').textContent = 'Aguarde o GPS (ative a localização) — a foto precisa sair com as coordenadas.'; return; }
-    $('#err').textContent = ''; $('#cam').click(); };
+    minhas().forEach(f => { const d = el(`<div class="ft"><img src="data:image/jpeg;base64,${f.base64}"><button class="x" title="Apagar">✕</button>${f.gps_aviso ? `<div class="dica" style="color:#c0392b">⚠ ${esc(f.gps_aviso)}</div>` : ''}</div>`);
+      d.querySelector('.x').onclick = () => { if (confirm('Apagar esta foto?')) { S.v.fotos = S.v.fotos.filter(x => x !== f); mostra(); salvarRascunho(); } }; $('#prev').appendChild(d); }); };
+  let contagem = null;
+  const abreCamera = () => { clearInterval(contagem); $('#gpsbox').innerHTML = ''; $('#err').textContent = ''; $('#cam').click(); };
+  $('#tirar').onclick = () => {
+    if (gpsBom()) return abreCamera();                               // GPS bom e recente → câmera na hora
+    // GPS fraco/velho/ausente: força atualização por até 10 s, com contador; depois vai com o que tiver (nunca trava o campo)
+    if (navigator.geolocation) navigator.geolocation.getCurrentPosition(guardaGPS, () => {}, {enableHighAccuracy: true, maximumAge: 0, timeout: 10000});
+    let falta = 10;
+    const desenha = () => {
+      if (!$('#gpsbox')) return clearInterval(contagem);              // saiu da tela de fotos
+      if (gpsBom()) { clearInterval(contagem); $('#gpsbox').innerHTML = `<div class="aviso">✅ GPS atualizado (±${S.gps.prec} m).</div><button class="btn ok" id="vai">📷 Abrir a câmera</button>`; $('#vai').onclick = abreCamera; return; }
+      if (falta <= 0) { clearInterval(contagem);
+        const como = S.gps ? `com a última posição (±${S.gps.prec} m, de ${idadeGPS()} s atrás)` : 'SEM coordenadas';
+        $('#gpsbox').innerHTML = `<div class="aviso">Não consegui atualizar o GPS. A foto vai ${como} e fica marcada para conferirmos no escritório.</div><button class="btn" id="vai">📷 Tirar foto assim mesmo</button>`;
+        $('#vai').onclick = abreCamera; return; }
+      $('#gpsbox').innerHTML = `<div class="aviso">📡 Atualizando a localização… <b>${falta}</b> s${S.gps ? ` (agora ±${S.gps.prec} m)` : ''}</div><button class="btn sec" id="vai">Tirar agora mesmo assim</button>`;
+      $('#vai').onclick = abreCamera; falta--; };
+    desenha(); contagem = setInterval(desenha, 1000);
+  };
   $('#cam').onchange = async e => { const f = e.target.files[0]; if (!f) return; const c = await comprimir(f);
-    S.v.fotos.push({tipo, ...c}); mostra(); e.target.value = ''; };
+    S.v.fotos.push({tipo, ...c}); mostra(); salvarRascunho(); e.target.value = ''; };
   mostra();
 }
 
@@ -708,6 +764,7 @@ async function telaCT() {
 }
 
 function passo() {
+  salvarRascunho();                    // a cada tela: se o app fechar, volta daqui
   const nome = PASSOS()[S.v.passo], r = S.v.r;
   if (nome === 'ct') return telaCT();
   if (nome === 'just_dist') return texto('just_dist', `Você está a ${S.v.dist} m do acesso. Por quê?`, {min: 10});
@@ -780,11 +837,12 @@ async function salvar() {
   const telas = new Set(PASSOS());
   const fotoVale = f => f.tipo === 'foto_acesso' || (f.tipo === 'foto_aviso' && telas.has('foto_aviso')) || (f.tipo === 'docs' && telas.has('docs'));
   const arquivos = S.v.fotos.filter(fotoVale).map(f => ({tipo: f.tipo === 'docs' ? 'documento' : f.tipo, mime: f.mime, base64: f.base64,
-    tirada_em: f.tirada_em, gps_lat: f.gps_lat, gps_lon: f.gps_lon}));
+    tirada_em: f.tirada_em, gps_lat: f.gps_lat, gps_lon: f.gps_lon, gps_precisao_m: f.gps_precisao_m, gps_idade_s: f.gps_idade_s, gps_aviso: f.gps_aviso || ''}));
   const svg = s => btoa(unescape(encodeURIComponent(s)));
   if (r.assinatura_svg) arquivos.push({tipo: 'assinatura', mime: 'image/svg+xml', base64: svg(r.assinatura_svg)});
   if (socio && ativa('assin_socio') && r.assin_socio) arquivos.push({tipo: 'assinatura_socio', mime: 'image/svg+xml', base64: svg(r.assin_socio)});
   await DB.filaPor({id_envio: S.v.id, visita, socio, arquivos, token: S.token, tecnico: S.tecnico, salvo_em: new Date().toISOString()});
+  await descartarRascunho();           // já está na fila de envio: o rascunho não é mais necessário
   {                                    // registro leve de TODA visita deste celular → próxima visita / CT encerrado certos, mesmo sem internet
     const m = (await DB.get('minhas')) || [];
     m.push({id: S.v.id, codigo: a.codigo, ct: r.ct, data: visita['Data da visita'], status: visita['Status da aplicação da ficha'],
