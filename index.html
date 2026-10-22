@@ -45,7 +45,7 @@ textarea{min-height:140px}
 <script>
 'use strict';
 const SERVIDOR = 'https://script.google.com/macros/s/AKfycbz-lzDXOHPw396P5CxXM3u2Uuu_tyFspxY5d39bw-EZ7xwku3MAgVlIVwqFO8ubZh-0QA/exec';
-const VERSAO_APP = '2026-10-22.13';
+const VERSAO_APP = '2026-10-22.15';
 const RAIO_LISTA_M = 250;           // acessos mais perto que isso aparecem na lista
 const AVISO_DIST_M = 300, JUST_DIST_M = 500;
 
@@ -162,17 +162,24 @@ async function telaInicio() {
   window.atualizaMapa();
 }
 
-let sincronizando = false;
+let sincronizando = false, reTentativa = null;
 async function sincronizar(manual = true) {   // envia a fila (só apaga do celular depois do "ok" do servidor) e atualiza os acessos
   if (sincronizando) return manual && aviso('Já estou enviando…');
   sincronizando = true;
   try {
-    const fila = await DB.filaTodos(); let ok = 0, erro = '';
-    for (const v of fila) {
-      try { const r = await api({acao: 'enviar', token: S.token, visita: v.visita, socio: v.socio, arquivos: v.arquivos});
-        if (r.ok) { await DB.filaTira(v.id_envio); ok++; if (r.avisos && r.avisos.length) aviso(r.avisos.join('\n'), 'erro'); } else erro = r.erro; }
-      catch (e) { erro = 'sem internet / sinal fraco'; break; }
+    let ok = 0, erro = '', feitos = new Set();
+    // repete até a fila esvaziar: visita salva DURANTE o envio também sai agora (antes esperava o envio automático de 5 min)
+    for (let fila = await DB.filaTodos(); fila.some(v => !feitos.has(v.id_envio)) && !erro; fila = await DB.filaTodos()) {
+      for (const v of fila.filter(v => !feitos.has(v.id_envio))) {
+        feitos.add(v.id_envio);
+        try { const r = await api({acao: 'enviar', token: S.token, visita: v.visita, socio: v.socio, arquivos: v.arquivos});
+          if (r.ok) { await DB.filaTira(v.id_envio); ok++; if (r.avisos && r.avisos.length) aviso(r.avisos.join('\n'), 'erro'); }
+          else { erro = r.erro; if (r.ocupado) break; } }
+        catch (e) { erro = 'sem internet / sinal fraco'; break; }
+      }
     }
+    // servidor ocupado / sinal caiu no meio: tenta de novo sozinho em 20–40 s (não espera os 5 min)
+    if (erro && !reTentativa) reTentativa = setTimeout(() => { reTentativa = null; if (navigator.onLine) sincronizar(false); }, 20000 + Math.random() * 20000);
     if (ok || erro || manual) aviso(`${ok} visita(s) enviada(s).` + (erro ? `\nFicou no celular: ${erro}` : ''), erro ? 'erro' : 'ok');
     if (!S.v) telaInicio();
     if (!erro) {
