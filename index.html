@@ -24,7 +24,7 @@ h2{font-size:20px;margin:6px 0 12px}
 .dica{color:#5b6475;font-size:14px;margin:4px 0 10px}
 .erro{color:var(--verm);font-weight:600;margin:8px 0}
 .aviso{background:#fff7d6;border-left:4px solid var(--amar);padding:10px;border-radius:6px;margin:8px 0}
-input[type=text],input[type=number],input[type=date],textarea,select{width:100%;padding:13px;font-size:17px;border:1px solid #c9d1de;border-radius:10px}
+input[type=text],input[type=search],input[type=number],input[type=date],textarea,select{width:100%;padding:13px;font-size:17px;border:1px solid #c9d1de;border-radius:10px}
 textarea{min-height:140px}
 .fotos{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
 .fotos .ft{position:relative;width:calc(50% - 4px)}
@@ -45,7 +45,7 @@ textarea{min-height:140px}
 <script>
 'use strict';
 const SERVIDOR = 'https://script.google.com/macros/s/AKfycbz-lzDXOHPw396P5CxXM3u2Uuu_tyFspxY5d39bw-EZ7xwku3MAgVlIVwqFO8ubZh-0QA/exec';
-const VERSAO_APP = '2026-10-22.15';
+const VERSAO_APP = '2026-10-22.16';
 const RAIO_LISTA_M = 250;           // acessos mais perto que isso aparecem na lista
 const AVISO_DIST_M = 300, JUST_DIST_M = 500;
 
@@ -104,33 +104,52 @@ async function iniciar() {
   telaInicio();
 }
 
-function telaLogin(msg) {
+// colaboradores (valor = nome que o servidor associa ao código; o código tem que ser DESSA pessoa)
+const COLABORADORES = [['Adailson', 'Adailson Silva'], ['Ailton', 'Ailton Marinho'], ['Alexandre', 'Alexandre Teixeira'], ['André', 'André'],
+  ['João', 'João Andrade'], ['Leidiane', 'Leidiane Magalhães'], ['Max', 'Maxciene Malaquias'], ['Matheus', 'Matheus (escritório)']];
+const nomeColab = n => (COLABORADORES.find(c => c[0] === n) || [n, n])[1];
+function telaLogin(msg, escolhido) {
   $('#hdr').textContent = '';
-  $('#tela').innerHTML = `<h2>Entrar</h2><p class="dica">Digite o seu código de acesso (recebido do escritório). Precisa de internet só nesta primeira vez.</p>
-    <input id="cod" type="text" autocomplete="off" placeholder="código"><div class="erro">${esc(msg || '')}</div>
+  $('#tela').innerHTML = `<h2>Entrar</h2><p class="dica">Escolha o seu nome e digite o seu código de acesso (recebido do escritório). Precisa de internet só nesta primeira vez.</p>
+    <select id="colab"><option value="">— Quem é você? —</option>${COLABORADORES.map(([v, n]) => `<option value="${esc(v)}" ${v === escolhido ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
+    <input id="cod" type="text" autocomplete="off" placeholder="código de acesso" style="margin-top:10px"><div class="erro">${esc(msg || '')}</div>
     <button class="btn" id="ent">Entrar e baixar os acessos</button>`;
   $('#ent').onclick = async () => {
-    const t = $('#cod').value.trim(); if (!t) return;
-    $('#ent').disabled = true; $('#ent').textContent = 'Baixando…';
+    const quem = $('#colab').value, t = $('#cod').value.trim();
+    if (!quem) return telaLogin('Escolha o seu nome na lista.');
+    if (!t) return telaLogin('Digite o seu código de acesso.', quem);
+    $('#ent').disabled = true; $('#ent').textContent = 'Conferindo…';
     try {
-      const r = await (await fetch(`${SERVIDOR}?acao=dados&token=${encodeURIComponent(t)}`)).json();
-      if (!r.ok) return telaLogin(r.erro || 'código inválido');
       const p = await (await fetch(`${SERVIDOR}?acao=ping&token=${encodeURIComponent(t)}`)).json();
+      if (!p.ok) return telaLogin(p.erro || 'código inválido', quem);
+      if (p.tecnico !== quem) return telaLogin(`Este código não é de ${nomeColab(quem)}. Confira o seu código com o escritório.`, quem);
+      $('#ent').textContent = 'Baixando os acessos…';
+      const r = await (await fetch(`${SERVIDOR}?acao=dados&token=${encodeURIComponent(t)}`)).json();
+      if (!r.ok) return telaLogin(r.erro || 'código inválido', quem);
       S.token = t; S.tecnico = p.tecnico; S.dados = {acessos: r.acessos, cts: r.cts, visitas: r.visitas || [], baixado_em: new Date().toISOString()};
       await DB.set('token', t); await DB.set('tecnico', p.tecnico); await DB.set('dados', S.dados);
       telaInicio();
-    } catch (e) { telaLogin('Sem internet — tente de novo onde tiver sinal.'); }
+    } catch (e) { telaLogin('Sem internet — tente de novo onde tiver sinal.', quem); }
   };
+}
+async function trocarColaborador() {   // só com a fila vazia: visita pendente é de quem a fez
+  const fila = await DB.filaTodos();
+  if (fila.length) return aviso(`Há ${fila.length} visita(s) de ${nomeColab(S.tecnico)} ainda não enviada(s). Envie primeiro (com internet) e depois troque.`, 'erro');
+  if (!confirm(`Sair de ${nomeColab(S.tecnico)} e entrar com outro colaborador?`)) return;
+  await DB.set('token', null); await DB.set('tecnico', null); S.token = S.tecnico = null;
+  telaLogin();
 }
 
 async function telaInicio() {
   const fila = await DB.filaTodos();
-  $('#hdr').textContent = `${S.tecnico} · ${fila.length} p/ enviar`;
+  $('#hdr').textContent = `${nomeColab(S.tecnico)} · ${fila.length} p/ enviar`;
   $('#tela').innerHTML = `<div id="mapa"></div>
     <div id="perto" class="lista"></div>
     <button class="btn sec" id="sinc">Enviar visitas salvas (${fila.length}) e atualizar acessos</button>
-    <p class="dica">Acessos atualizados em ${S.dados ? new Date(S.dados.baixado_em).toLocaleString('pt-BR') : '—'} · app ${VERSAO_APP}</p>`;
+    <p class="dica">Acessos atualizados em ${S.dados ? new Date(S.dados.baixado_em).toLocaleString('pt-BR') : '—'} · app ${VERSAO_APP}</p>
+    <p class="dica">Colaborador: <b>${esc(nomeColab(S.tecnico))}</b> · <a href="#" id="troca">trocar colaborador</a></p>`;
   $('#sinc').onclick = sincronizar;
+  $('#troca').onclick = e => { e.preventDefault(); trocarColaborador(); };
   const m = L.map('mapa', {zoomControl: true}).setView([-29.2, -51.5], 8);
   // satélite por padrão (o campo se acha melhor), com botão p/ o mapa de ruas; a escolha fica guardada no celular
   const sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {maxZoom: 19, attribution: 'Imagem © Esri'});
@@ -172,7 +191,7 @@ async function sincronizar(manual = true) {   // envia a fila (só apaga do celu
     for (let fila = await DB.filaTodos(); fila.some(v => !feitos.has(v.id_envio)) && !erro; fila = await DB.filaTodos()) {
       for (const v of fila.filter(v => !feitos.has(v.id_envio))) {
         feitos.add(v.id_envio);
-        try { const r = await api({acao: 'enviar', token: S.token, visita: v.visita, socio: v.socio, arquivos: v.arquivos});
+        try { const r = await api({acao: 'enviar', token: v.token || S.token, visita: v.visita, socio: v.socio, arquivos: v.arquivos});   // sai no nome de QUEM FEZ
           if (r.ok) { await DB.filaTira(v.id_envio); ok++; if (r.avisos && r.avisos.length) aviso(r.avisos.join('\n'), 'erro'); }
           else { erro = r.erro; if (r.ocupado) break; } }
         catch (e) { erro = 'sem internet / sinal fraco'; break; }
@@ -765,7 +784,7 @@ async function salvar() {
   const svg = s => btoa(unescape(encodeURIComponent(s)));
   if (r.assinatura_svg) arquivos.push({tipo: 'assinatura', mime: 'image/svg+xml', base64: svg(r.assinatura_svg)});
   if (socio && ativa('assin_socio') && r.assin_socio) arquivos.push({tipo: 'assinatura_socio', mime: 'image/svg+xml', base64: svg(r.assin_socio)});
-  await DB.filaPor({id_envio: S.v.id, visita, socio, arquivos, salvo_em: new Date().toISOString()});
+  await DB.filaPor({id_envio: S.v.id, visita, socio, arquivos, token: S.token, tecnico: S.tecnico, salvo_em: new Date().toISOString()});
   {                                    // registro leve de TODA visita deste celular → próxima visita / CT encerrado certos, mesmo sem internet
     const m = (await DB.get('minhas')) || [];
     m.push({id: S.v.id, codigo: a.codigo, ct: r.ct, data: visita['Data da visita'], status: visita['Status da aplicação da ficha'],
