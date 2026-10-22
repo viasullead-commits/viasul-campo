@@ -1,5 +1,5 @@
 // Service worker: guarda o app, a biblioteca do mapa e os pedaços de mapa já vistos → funciona offline.
-const CACHE = 'viasul-campo-2026-10-22.2';
+const CACHE = 'viasul-campo-2026-10-22.4';
 const BASE = ['./', 'index.html', 'manifest.json', 'icone.svg',
   'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css', 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(BASE))); self.skipWaiting(); });
@@ -12,6 +12,7 @@ self.addEventListener('fetch', e => {
     return;
   }
   // app: internet primeiro (pega a versão nova), guardado só se estiver sem sinal
-  e.respondWith(fetch(e.request).then(n => { if (n.ok) { const copia = n.clone(); caches.open(CACHE).then(c => c.put(e.request, copia)); } return n; })
+  // cache: 'no-cache' → sempre confere com o site (o GitHub manda o navegador guardar 10 min e o celular ficava na versão velha)
+  e.respondWith(fetch(e.request.url, {cache: 'no-cache'}).then(n => { if (n.ok) { const copia = n.clone(); caches.open(CACHE).then(c => c.put(e.request, copia)); } return n; })
     .catch(() => caches.match(e.request, {ignoreSearch: true})));
 });
