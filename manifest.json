@@ -1,0 +1,9 @@
+{
+  "name": "ViaSul Campo (Lead)",
+  "short_name": "ViaSul Campo",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#1f3864",
+  "icons": [{"src": "icone.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}]
+}

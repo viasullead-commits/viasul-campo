@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<meta name="theme-color" content="#1f3864">
+<title>ViaSul Campo</title>
+<link rel="manifest" href="manifest.json">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+:root{--az:#1f3864;--az2:#2f5597;--cinza:#f2f4f7;--txt:#1d2433;--verm:#c0392b;--verde:#1e8449;--amar:#f4d03f}
+*{box-sizing:border-box}html,body{margin:0;height:100%;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:var(--txt);background:#fff}
+header{background:var(--az);color:#fff;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;font-weight:600}
+header small{font-weight:400;opacity:.85}
+main{padding:14px;max-width:640px;margin:0 auto}
+#mapa{height:46vh;border-radius:10px;margin-bottom:10px}
+.btn{display:block;width:100%;padding:15px;border:0;border-radius:10px;background:var(--az2);color:#fff;font-size:17px;font-weight:600;margin:8px 0}
+.btn.sec{background:#e4e8f0;color:var(--txt)}.btn.ok{background:var(--verde)}.btn.perigo{background:var(--verm)}
+.btn:disabled{opacity:.45}
+.cartao{background:var(--cinza);border-radius:10px;padding:12px;margin:8px 0}
+.lista button{display:block;width:100%;text-align:left;padding:13px;margin:6px 0;border:1px solid #d5dbe5;border-radius:10px;background:#fff;font-size:16px}
+.lista button.sel{border:2px solid var(--az2);background:#eef3fb}
+h2{font-size:20px;margin:6px 0 12px}
+.dica{color:#5b6475;font-size:14px;margin:4px 0 10px}
+.erro{color:var(--verm);font-weight:600;margin:8px 0}
+.aviso{background:#fff7d6;border-left:4px solid var(--amar);padding:10px;border-radius:6px;margin:8px 0}
+input[type=text],input[type=number],input[type=date],textarea,select{width:100%;padding:13px;font-size:17px;border:1px solid #c9d1de;border-radius:10px}
+textarea{min-height:140px}
+.fotos img{width:31%;margin:1%;border-radius:8px;aspect-ratio:1;object-fit:cover}
+#assin{width:100%;height:180px;border:2px dashed #9aa7bd;border-radius:10px;touch-action:none;background:#fff}
+.barra{position:sticky;bottom:0;background:#fff;padding:8px 0;display:flex;gap:8px}.barra .btn{margin:0}
+.prog{height:6px;background:#e4e8f0;border-radius:3px;margin-bottom:12px}.prog div{height:6px;background:var(--az2);border-radius:3px}
+.tag{display:inline-block;padding:2px 8px;border-radius:12px;background:#e4e8f0;font-size:13px;margin-right:4px}
+.toast{position:fixed;left:12px;right:12px;bottom:16px;z-index:9999;max-width:620px;margin:0 auto;padding:14px;border-radius:10px;background:#1d2433;color:#fff;font-size:16px;box-shadow:0 4px 18px rgba(0,0,0,.25)}
+.toast.ok{background:var(--verde)}.toast.erro{background:var(--verm)}
+</style>
+</head>
+<body>
+<header><span>ViaSul Campo</span><small id="hdr"></small></header>
+<main id="tela"></main>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+'use strict';
+const SERVIDOR = 'https://script.google.com/macros/s/AKfycbz-lzDXOHPw396P5CxXM3u2Uuu_tyFspxY5d39bw-EZ7xwku3MAgVlIVwqFO8ubZh-0QA/exec';
+const VERSAO_APP = '2026-10-22.1';
+const RAIO_LISTA_M = 250;           // acessos mais perto que isso aparecem na lista
+const AVISO_DIST_M = 300, JUST_DIST_M = 500;
+
+// ---------------- armazenamento no celular (IndexedDB) ----------------
+const DB = {
+  db: null,
+  abrir() { return new Promise((ok, err) => { const r = indexedDB.open('viasul_campo', 1);
+    r.onupgradeneeded = () => { r.result.createObjectStore('kv'); r.result.createObjectStore('fila', {keyPath: 'id_envio'}); };
+    r.onsuccess = () => { DB.db = r.result; ok(); }; r.onerror = () => err(r.error); }); },
+  t(store, modo) { return DB.db.transaction(store, modo).objectStore(store); },
+  get(k) { return new Promise(ok => { const r = DB.t('kv', 'readonly').get(k); r.onsuccess = () => ok(r.result); }); },
+  set(k, v) { return new Promise(ok => { DB.t('kv', 'readwrite').put(v, k).onsuccess = () => ok(); }); },
+  filaTodos() { return new Promise(ok => { const r = DB.t('fila', 'readonly').getAll(); r.onsuccess = () => ok(r.result || []); }); },
+  filaPor(v) { return new Promise(ok => { DB.t('fila', 'readwrite').put(v).onsuccess = () => ok(); }); },
+  filaTira(id) { return new Promise(ok => { DB.t('fila', 'readwrite').delete(id).onsuccess = () => ok(); }); },
+};
+if (navigator.storage && navigator.storage.persist) navigator.storage.persist();   // pede p/ o celular não apagar os dados
+
+// ---------------- utilidades ----------------
+const $ = s => document.querySelector(s);
+const el = (h) => { const d = document.createElement('div'); d.innerHTML = h.trim(); return d.firstChild; };
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+function distM(a, b, c, d) { const R = 6371000, r = x => x * Math.PI / 180; const dl = r(c - a), dg = r(d - b);
+  const h = Math.sin(dl / 2) ** 2 + Math.cos(r(a)) * Math.cos(r(c)) * Math.sin(dg / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(h)); }
+const dois = n => String(n).padStart(2, '0');
+const hoje = (d = new Date()) => `${d.getFullYear()}-${dois(d.getMonth() + 1)}-${dois(d.getDate())}`;   // data/hora do CELULAR (não UTC)
+const hora = (d = new Date()) => `${dois(d.getHours())}:${dois(d.getMinutes())}`;
+const uid = () => 'v' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+async function pega(url, opts = {}, ms = 90000) {   // fetch com tempo-limite (sinal fraco não pode travar o app)
+  const ab = new AbortController(), t = setTimeout(() => ab.abort(), ms);
+  try { return await (await fetch(url, {...opts, signal: ab.signal})).json(); } finally { clearTimeout(t); }
+}
+const api = (dados, ms) => pega(SERVIDOR, {method: 'POST', body: JSON.stringify(dados), headers: {'Content-Type': 'text/plain;charset=utf-8'}}, ms);  // text/plain → sem "preflight"
+function aviso(msg, tipo = '') {      // recado na tela (alert trava o celular e some no meio do campo)
+  const d = el(`<div class="toast ${tipo}">${esc(msg).replace(/\n/g, '<br>')}</div>`);
+  document.body.appendChild(d); d.onclick = () => d.remove(); setTimeout(() => d.remove(), tipo === 'erro' ? 15000 : 7000);
+}
+let S = {token: null, tecnico: null, aparelho: null, dados: null, gps: null, v: null};  // v = visita em andamento
+
+// ---------------- GPS contínuo ----------------
+function ligarGPS() {
+  if (!navigator.geolocation) return;
+  navigator.geolocation.watchPosition(p => { S.gps = {lat: p.coords.latitude, lon: p.coords.longitude, prec: Math.round(p.coords.accuracy)};
+    if (window.atualizaMapa) window.atualizaMapa(); }, () => {}, {enableHighAccuracy: true, maximumAge: 5000});
+}
+
+// ---------------- telas ----------------
+async function iniciar() {
+  await DB.abrir();
+  S.token = await DB.get('token'); S.tecnico = await DB.get('tecnico'); S.dados = await DB.get('dados');
+  S.aparelho = await DB.get('aparelho') || (await (async () => { const a = 'cel-' + Math.random().toString(36).slice(2, 8); await DB.set('aparelho', a); return a; })());
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
+  ligarGPS();
+  if (!S.token) return telaLogin();
+  telaInicio();
+}
+
+function telaLogin(msg) {
+  $('#hdr').textContent = '';
+  $('#tela').innerHTML = `<h2>Entrar</h2><p class="dica">Digite o seu código de acesso (recebido do escritório). Precisa de internet só nesta primeira vez.</p>
+    <input id="cod" type="text" autocomplete="off" placeholder="código"><div class="erro">${esc(msg || '')}</div>
+    <button class="btn" id="ent">Entrar e baixar os acessos</button>`;
+  $('#ent').onclick = async () => {
+    const t = $('#cod').value.trim(); if (!t) return;
+    $('#ent').disabled = true; $('#ent').textContent = 'Baixando…';
+    try {
+      const r = await (await fetch(`${SERVIDOR}?acao=dados&token=${encodeURIComponent(t)}`)).json();
+      if (!r.ok) return telaLogin(r.erro || 'código inválido');
+      const p = await (await fetch(`${SERVIDOR}?acao=ping&token=${encodeURIComponent(t)}`)).json();
+      S.token = t; S.tecnico = p.tecnico; S.dados = {acessos: r.acessos, cts: r.cts, baixado_em: new Date().toISOString()};
+      await DB.set('token', t); await DB.set('tecnico', p.tecnico); await DB.set('dados', S.dados);
+      telaInicio();
+    } catch (e) { telaLogin('Sem internet — tente de novo onde tiver sinal.'); }
+  };
+}
+
+async function telaInicio() {
+  const fila = await DB.filaTodos();
+  $('#hdr').textContent = `${S.tecnico} · ${fila.length} p/ enviar`;
+  $('#tela').innerHTML = `<div id="mapa"></div>
+    <div id="perto" class="lista"></div>
+    <button class="btn sec" id="sinc">Enviar visitas salvas (${fila.length}) e atualizar acessos</button>
+    <p class="dica">Acessos atualizados em ${S.dados ? new Date(S.dados.baixado_em).toLocaleString('pt-BR') : '—'} · app ${VERSAO_APP}</p>`;
+  $('#sinc').onclick = sincronizar;
+  const m = L.map('mapa', {zoomControl: true}).setView([-29.2, -51.5], 8);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom: 19, attribution: '© OpenStreetMap'}).addTo(m);
+  const camada = L.layerGroup().addTo(m);
+  S.dados.acessos.forEach(a => { const mk = L.circleMarker([+a.lat, +a.lon], {radius: 6, color: '#2f5597', weight: 2, fillOpacity: .7})
+    .bindTooltip(a.codigo).on('click', () => escolherAcesso(a)); mk.addTo(camada); });
+  let eu = null, centrou = false;
+  window.atualizaMapa = () => {
+    if (!$('#perto')) return;           // GPS mexeu durante a visita: o mapa não está na tela
+    if (!S.gps) { $('#perto').innerHTML = '<div class="aviso">Aguardando o GPS… (ative a localização)</div>'; return; }
+    if (!eu) eu = L.circleMarker([S.gps.lat, S.gps.lon], {radius: 9, color: '#fff', weight: 3, fillColor: '#1a73e8', fillOpacity: 1}).addTo(m);
+    eu.setLatLng([S.gps.lat, S.gps.lon]);
+    if (!centrou) { m.setView([S.gps.lat, S.gps.lon], 17); centrou = true; }
+    const perto = S.dados.acessos.map(a => ({a, d: distM(S.gps.lat, S.gps.lon, +a.lat, +a.lon)})).sort((x, y) => x.d - y.d);
+    const lista = perto.filter(x => x.d <= RAIO_LISTA_M).slice(0, 8);
+    const mais = perto[0];
+    $('#perto').innerHTML = `<div class="dica">GPS ±${S.gps.prec} m · acesso mais perto: <b>${esc(mais.a.codigo)}</b> (${Math.round(mais.d)} m)</div>`;
+    (lista.length ? lista : [mais]).forEach(x => { const b = el(`<button>${esc(x.a.codigo)} <span class="tag">${Math.round(x.d)} m</span><br><small>${esc(x.a.municipio)} · km ${esc(x.a.km)} ${esc(x.a.sentido)}</small></button>`);
+      b.onclick = () => escolherAcesso(x.a, x.d); $('#perto').appendChild(b); });
+  };
+  window.atualizaMapa();
+}
+
+let sincronizando = false;
+async function sincronizar(manual = true) {   // envia a fila (só apaga do celular depois do "ok" do servidor) e atualiza os acessos
+  if (sincronizando) return manual && aviso('Já estou enviando…');
+  sincronizando = true;
+  try {
+    const fila = await DB.filaTodos(); let ok = 0, erro = '';
+    for (const v of fila) {
+      try { const r = await api({acao: 'enviar', token: S.token, visita: v.visita, socio: v.socio, arquivos: v.arquivos});
+        if (r.ok) { await DB.filaTira(v.id_envio); ok++; if (r.avisos && r.avisos.length) aviso(r.avisos.join('\n'), 'erro'); } else erro = r.erro; }
+      catch (e) { erro = 'sem internet / sinal fraco'; break; }
+    }
+    if (ok || erro || manual) aviso(`${ok} visita(s) enviada(s).` + (erro ? `\nFicou no celular: ${erro}` : ''), erro ? 'erro' : 'ok');
+    if (!S.v) telaInicio();
+    if (!erro) {
+      try { const r = await pega(`${SERVIDOR}?acao=dados&token=${encodeURIComponent(S.token)}`);
+        if (r.ok) { S.dados = {acessos: r.acessos, cts: r.cts, baixado_em: new Date().toISOString()}; await DB.set('dados', S.dados); if (!S.v) telaInicio(); } }
+      catch (e) { if (manual) aviso('Não consegui atualizar a lista de acessos agora (uso a que já está no celular).', 'erro'); }
+    }
+  } finally { sincronizando = false; }
+}
+// envia sozinho quando a internet volta e a cada 5 min
+window.addEventListener('online', () => S.token && sincronizar(false));
+setInterval(async () => { if (S.token && navigator.onLine && (await DB.filaTodos()).length) sincronizar(false); }, 300000);
+
+// ---------------- fluxo da visita: uma pergunta por tela ----------------
+const OP = {
+  cond_util: ['Residencial', 'Comercial', 'Misto (Comercial/Residencial)', 'Agropecuário', 'Industrial', 'Institucional', 'Público', 'Passivo Ambiental', 'Outros'],
+  faixa: ['Faixa de Domínio', 'Faixa não edificante', 'Fora da Faixa'], zona: ['Rural', 'Urbana'],
+  construcao: ['Construção em Alvenaria', 'Construção em Madeira', 'Construção Mista', 'Sem construção'], situacao: ['Regular', 'Irregular'],
+  acesso_e: ['Único acesso ao imóvel', 'Tem alternativa existente'], tipo_acesso: ['Direto à rodovia', 'Servidão/acesso compartilhado'],
+  cond_acesso: ['Pavimentado', 'Revestimento primário', 'Sem revestimento'],
+  status: ['Ausente', 'Recusa', 'Abandonado / ruína', 'Concluído'],
+};
+const COL = {cond_util: 'Condição de utilização', faixa: 'Faixa ocupada', zona: 'Zona', construcao: 'Tipo da construção', situacao: 'Situação',
+  acesso_e: 'O acesso é', tipo_acesso: 'Tipo de acesso', cond_acesso: 'Condição do acesso'};
+const slug = s => String(s).replace(/[^0-9A-Za-z]+/g, '_').replace(/^_|_$/g, '');   // igual ao slug() do gerar_formulario.py
+const deSlug = (k, v) => (OP[k] || []).find(o => slug(o) === v) || '';             // valor desconhecido → deixa em branco p/ o campo marcar
+
+function escolherAcesso(a, d) {
+  if (d === undefined && S.gps) d = distM(S.gps.lat, S.gps.lon, +a.lat, +a.lon);
+  S.v = {acesso: a, dist: d == null ? null : Math.round(d), r: {}, fotos: [], passo: 0, inicio: new Date().toISOString(), id: uid()};
+  passo();
+}
+
+function PASSOS() {                    // lista de telas conforme as respostas (dinâmica)
+  const r = S.v.r, st = r.status;
+  const p = ['ct'];
+  if (S.v.dist > JUST_DIST_M) p.push('just_dist');
+  if (r.ct_encerrado) p.push('confirma_encerrado');
+  p.push(...Object.keys(COL)); if (r.acesso_e === 'Tem alternativa existente') p.push('alternativa');
+  p.push('status');
+  if (st === 'Ausente' || st === 'Recusa') { if (st === 'Recusa') p.push('quem_recusou'); p.push('aviso'); if (r.aviso === 'Sim') p.push('foto_aviso'); if (st === 'Ausente') p.push('vizinho'); }
+  p.push('foto_evidencia', 'foto_acesso', 'fotos_comp');
+  if (st === 'Concluído') p.push('fase3');
+  p.push('obs', 'pendente'); if (r.pendente === 'Sim') p.push('pendente_o_que');
+  p.push('assinatura'); if (st === 'Concluído' && !r.assinatura_svg) p.push('sem_assinatura');
+  p.push('revisao');
+  return p;
+}
+
+function moldura(titulo, corpo, {dica = '', valido = () => true} = {}) {
+  const ps = PASSOS(), i = S.v.passo;
+  $('#hdr').textContent = `${S.v.acesso.codigo}${S.v.r.ct ? ' · CT ' + S.v.r.ct : ''}`;
+  $('#tela').innerHTML = `<div class="prog"><div style="width:${Math.round(100 * (i + 1) / ps.length)}%"></div></div>
+    <h2>${titulo}</h2>${dica ? `<p class="dica">${dica}</p>` : ''}<div id="corpo"></div><div class="erro" id="err"></div>
+    <div class="barra"><button class="btn sec" id="volta">Voltar</button><button class="btn" id="seg">Próximo</button></div>`;
+  if (typeof corpo === 'string') $('#corpo').innerHTML = corpo; else $('#corpo').appendChild(corpo);
+  $('#volta').onclick = () => { if (S.v.passo === 0) return confirm('Sair desta visita sem salvar?') && telaInicio(); S.v.passo--; passo(); };
+  $('#seg').onclick = () => { const e = valido(); if (e !== true) { $('#err').textContent = e; return; } S.v.passo++; passo(); };
+}
+
+function escolha(campo, titulo, opcoes, {dica, obrig = true} = {}) {
+  const d = el('<div class="lista"></div>');
+  opcoes.forEach(o => { const b = el(`<button class="${S.v.r[campo] === o ? 'sel' : ''}">${esc(o)}</button>`);
+    b.onclick = () => { S.v.r[campo] = o; [...d.children].forEach(x => x.classList.remove('sel')); b.classList.add('sel'); }; d.appendChild(b); });
+  moldura(titulo, d, {dica, valido: () => (!obrig || S.v.r[campo]) ? true : 'Escolha uma opção.'});
+}
+
+function texto(campo, titulo, {dica, min = 0, multilinha = false, obrig = true} = {}) {
+  moldura(titulo, multilinha ? `<textarea id="in">${esc(S.v.r[campo] || '')}</textarea>` : `<input id="in" type="text" value="${esc(S.v.r[campo] || '')}">`,
+    {dica, valido: () => { const v = $('#in').value.trim(); S.v.r[campo] = v;
+      if (obrig && !v) return 'Campo obrigatório.'; if (v.length < min) return `Escreva pelo menos ${min} caracteres.`; return true; }});
+}
+
+function comprimir(arq) {             // foto → JPEG até 1600 px, com data/hora e GPS do momento
+  return new Promise(ok => { const img = new Image(); img.onload = () => { const k = Math.min(1, 1600 / Math.max(img.width, img.height));
+    const c = document.createElement('canvas'); c.width = img.width * k; c.height = img.height * k; c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    ok({base64: c.toDataURL('image/jpeg', .82).split(',')[1], mime: 'image/jpeg', tirada_em: new Date().toISOString(),
+        gps_lat: S.gps ? S.gps.lat : '', gps_lon: S.gps ? S.gps.lon : ''}); }; img.src = URL.createObjectURL(arq); });
+}
+
+function foto(tipo, titulo, {obrig = true, varias = false, dica} = {}) {
+  const minhas = () => S.v.fotos.filter(f => f.tipo === tipo);
+  const d = el(`<div><input id="cam" type="file" accept="image/*" capture="environment" style="display:none">
+    <button class="btn" id="tirar">📷 Tirar foto</button><div class="fotos" id="prev"></div></div>`);
+  moldura(titulo, d, {dica, valido: () => (!obrig || minhas().length) ? true : 'Foto obrigatória.'});
+  const mostra = () => { $('#prev').innerHTML = ''; minhas().forEach(f => $('#prev').appendChild(el(`<img src="data:image/jpeg;base64,${f.base64}">`))); };
+  $('#tirar').onclick = () => $('#cam').click();
+  $('#cam').onchange = async e => { const f = e.target.files[0]; if (!f) return; const c = await comprimir(f);
+    if (!varias) S.v.fotos = S.v.fotos.filter(x => x.tipo !== tipo); S.v.fotos.push({tipo, ...c}); mostra(); e.target.value = ''; };
+  mostra();
+}
+
+function assinatura() {               // traço vetorial → SVG (igual ao Geonexus)
+  const d = el(`<div><canvas id="assin"></canvas><button class="btn sec" id="limpa">Limpar</button></div>`);
+  moldura('Assinatura do entrevistado / declarante', d, {dica: 'Opcional — peça sempre. O entrevistado assina com o dedo.', valido: () => {
+    S.v.r.assinatura_svg = tracos.length ? `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${cv.width} ${cv.height}"><g fill="none" stroke="#0e2841" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">${tracos.map(t => `<path d="M${t.map(p => p.join(' ')).join(' L')}"/>`).join('')}</g></svg>` : '';
+    return true; }});
+  const cv = $('#assin'); cv.width = cv.offsetWidth; cv.height = cv.offsetHeight; const g = cv.getContext('2d'); g.lineWidth = 2.2; g.lineCap = 'round';
+  let tracos = [], atual = null;
+  const pt = e => { const r = cv.getBoundingClientRect(); return [Math.round(e.clientX - r.left), Math.round(e.clientY - r.top)]; };
+  cv.onpointerdown = e => { atual = [pt(e)]; tracos.push(atual); };
+  cv.onpointermove = e => { if (!atual) return; const p = pt(e), q = atual[atual.length - 1]; g.beginPath(); g.moveTo(...q); g.lineTo(...p); g.stroke(); atual.push(p); };
+  cv.onpointerup = cv.onpointerleave = () => { atual = null; };
+  $('#limpa').onclick = () => { tracos = []; g.clearRect(0, 0, cv.width, cv.height); };
+}
+
+async function telaCT() {
+  const a = S.v.acesso, cts = S.dados.cts.filter(c => c.acesso === a.name);
+  const d = el('<div class="lista"></div>');
+  cts.forEach(c => { const b = el(`<button class="${S.v.r.ct_name === c.name ? 'sel' : ''}">${esc(c.label)}</button>`);
+    b.onclick = () => { S.v.r.ct_name = c.name; S.v.r.ct = String(c.ct).padStart(2, '0'); S.v.r.tentativa = String(c.proxima);
+      S.v.r.novo = String(c.name).endsWith('__NOVO'); S.v.r.ct_encerrado = String(c.encerrado) === '1';
+      [...d.children].forEach(x => x.classList.remove('sel')); b.classList.add('sel'); }; d.appendChild(b); });
+  const avisoDist = S.v.dist > AVISO_DIST_M ? `<div class="aviso">Você está a ${S.v.dist} m deste acesso. Confira se é o acesso certo.</div>` : '';
+  moldura('Qual imóvel (CT)?', d, {dica: avisoDist + 'O número do CT e da visita são automáticos.', valido: () => S.v.r.ct ? true : 'Escolha o CT.'});
+  // pré-preenche o bloco do acesso com o que já sabemos
+  Object.keys(COL).forEach(k => { if (!S.v.r[k] && a[k]) S.v.r[k] = deSlug(k, a[k]); });
+  if (!S.v.r.alternativa && a.alternativa) S.v.r.alternativa = a.alternativa;
+  const seg = $('#seg').onclick;
+  $('#seg').onclick = async () => {
+    if (!S.v.r.ct) return seg();
+    if (navigator.onLine) {           // trava de verdade quando há internet
+      $('#seg').disabled = true; $('#seg').textContent = 'Conferindo…';
+      try { const r = await api({acao: 'reservar', token: S.token, codigo: a.codigo, ct: S.v.r.ct, aparelho: S.aparelho, novo: S.v.r.novo}, 15000);
+        if (!r.ok && r.ocupado_por) {
+          if (S.v.r.novo && r.sugestao_ct) { aviso(`${r.ocupado_por} está preenchendo o CT ${S.v.r.ct} agora. Este imóvel novo vai ser o CT ${r.sugestao_ct}.`, 'erro');
+            S.v.r.ct = r.sugestao_ct; await api({acao: 'reservar', token: S.token, codigo: a.codigo, ct: S.v.r.ct, aparelho: S.aparelho, novo: true}, 15000); }
+          else { $('#err').textContent = `${r.ocupado_por} está preenchendo este CT agora. Combine com ele(a) ou escolha outro.`; return; }
+        } } catch (e) { /* sem sinal: segue offline; a conferência é feita no envio */ }
+    }
+    seg();
+  };
+}
+
+function passo() {
+  const nome = PASSOS()[S.v.passo], r = S.v.r;
+  if (nome === 'ct') return telaCT();
+  if (nome === 'just_dist') return texto('just_dist', `Você está a ${S.v.dist} m do acesso. Por quê?`, {min: 10});
+  if (nome === 'confirma_encerrado') return escolha('confirma_encerrado', 'Este CT já está ENCERRADO. Precisa mesmo de outra visita?', ['Sim, preciso'], {});
+  if (COL[nome]) return escolha(nome, COL[nome], OP[nome], {dica: 'Já vem marcado o que sabemos deste acesso — confira e corrija se precisar.'});
+  if (nome === 'alternativa') return texto('alternativa', 'Qual é a alternativa de acesso?');
+  if (nome === 'status') return escolha('status', `Resultado desta visita ao CT ${r.ct} (${r.tentativa}ª visita)`, OP.status);
+  if (nome === 'quem_recusou') return texto('quem_recusou', 'Quem recusou? (nome e relação com o imóvel, se souber)', {obrig: false});
+  if (nome === 'aviso') return escolha('aviso', 'Deixou aviso/adesivo com telefone?', ['Sim', 'Não']);
+  if (nome === 'foto_aviso') return foto('foto_aviso', 'Foto do aviso deixado');
+  if (nome === 'vizinho') return texto('vizinho', 'Informação de vizinho (melhor dia e horário para encontrar)', {obrig: false});
+  if (nome === 'foto_evidencia') return foto('foto_evidencia', 'Foto 1 — EVIDÊNCIA do imóvel', {dica: 'Fachada / situação do imóvel.'});
+  if (nome === 'foto_acesso') return foto('foto_acesso', 'Foto 2 — ACESSO à rodovia');
+  if (nome === 'fotos_comp') return foto('foto_complementar', 'Fotos complementares (opcional)', {obrig: false, varias: true});
+  if (nome === 'fase3') return moldura('Ficha completa (pessoa física / jurídica e socioeconômica)', '<div class="aviso">Esta parte entra na próxima versão do app (fase 3). Por enquanto, descreva o cadastro na observação.</div>');
+  if (nome === 'obs') return texto('obs', 'OBSERVAÇÕES DA VISITA', {multilinha: true, min: 30, dica: 'O que aconteceu, com quem falou, retorno combinado…'});
+  if (nome === 'pendente') return escolha('pendente', 'Ficou algo pendente para depois?', ['Sim', 'Não']);
+  if (nome === 'pendente_o_que') return texto('pendente_o_que', 'O que ficou pendente?');
+  if (nome === 'assinatura') return assinatura();
+  if (nome === 'sem_assinatura') return texto('sem_assinatura', 'Por que não assinou?');
+  if (nome === 'revisao') return revisao();
+}
+
+function revisao() {
+  const r = S.v.r, a = S.v.acesso;
+  moldura('Revisar e salvar', `<div class="cartao"><b>${esc(a.codigo)}</b> · CT ${r.ct} · ${r.tentativa}ª visita<br>${esc(r.status)} · ${S.v.fotos.length} foto(s)${r.assinatura_svg ? ' · assinado' : ''}<br><small>${esc(r.obs)}</small></div>
+    <p class="dica">Ao salvar, a visita fica guardada no celular e é enviada quando tiver internet.</p>`);
+  $('#seg').textContent = 'Salvar visita'; $('#seg').classList.add('ok');
+  $('#seg').onclick = salvar;
+}
+
+async function salvar() {
+  const r = S.v.r, a = S.v.acesso, st = r.status;
+  const visita = {id_envio: S.v.id, versao_app: VERSAO_APP, aparelho: S.aparelho, inicio: S.v.inicio, fim: new Date().toISOString(),
+    gps_lat: S.gps ? S.gps.lat : '', gps_lon: S.gps ? S.gps.lon : '', gps_precisao_m: S.gps ? S.gps.prec : '', distancia_m: S.v.dist ?? '',
+    justificativa_distancia: r.just_dist || '', 'Código': a.codigo, 'CT Nº': r.ct, 'Tentativa nº': r.tentativa + 'ª', novo_imovel: r.novo ? 'sim' : 'não',
+    'Data da visita': hoje(new Date(S.v.inicio)), 'Hora de início da visita': hora(new Date(S.v.inicio)),
+    'Status da aplicação da ficha': st === 'Abandonado / ruína' ? 'Ausente' : st,
+    'O imóvel está abandonado/ruína?': st === 'Abandonado / ruína' ? 'Sim' : 'Não', 'Houve recusa em prestar informações?': st === 'Recusa' ? 'Sim' : 'Não',
+    'No momento da abordagem o imóvel está ocupado?': st === 'Concluído' ? 'Sim' : (st === 'Ausente' ? 'Não' : 'Não se aplica'),
+    quem_recusou: r.quem_recusou || '', 'Aviso/adesivo com telefone foi deixado no local?': r.aviso || '',
+    'Informação de vizinho (melhor dia e horário para encontrar)': r.vizinho || '', Concessionaria: 'ViaSul', 'Município': a.municipio, UF: 'RS',
+    CEP: a.cep, Rodovia: a.rodovia, KM: a.km, Sentido: a.sentido, 'Endereço': `${a.rodovia}, km ${a.km}, Pista ${a.sentido}`,
+    ...Object.fromEntries(Object.entries(COL).map(([k, c]) => [c, r[k] || ''])), 'Qual é a alternativa de acesso?': r.alternativa || '',
+    'Observações da visita': r.obs, 'O cadastro será atualizado depois? Há algo pendente?': r.pendente || '',
+    'O que está pendente? (documento, informação, retorno do morador…)': r.pendente_o_que || '', motivo_sem_assinatura: r.sem_assinatura || ''};
+  const arquivos = S.v.fotos.map(f => ({tipo: f.tipo, mime: f.mime, base64: f.base64, tirada_em: f.tirada_em, gps_lat: f.gps_lat, gps_lon: f.gps_lon}));
+  if (r.assinatura_svg) arquivos.push({tipo: 'assinatura', mime: 'image/svg+xml', base64: btoa(unescape(encodeURIComponent(r.assinatura_svg)))});
+  await DB.filaPor({id_envio: S.v.id, visita, socio: null, arquivos, salvo_em: new Date().toISOString()});
+  S.v = null;
+  aviso('Visita salva no celular.' + (navigator.onLine ? ' Enviando…' : ' Será enviada quando tiver internet.'), 'ok');
+  telaInicio();
+  if (navigator.onLine) sincronizar(false);
+}
+
+iniciar();
+</script>
+</body>
+</html>
