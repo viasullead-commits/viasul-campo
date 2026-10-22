@@ -45,7 +45,7 @@ textarea{min-height:140px}
 <script>
 'use strict';
 const SERVIDOR = 'https://script.google.com/macros/s/AKfycbz-lzDXOHPw396P5CxXM3u2Uuu_tyFspxY5d39bw-EZ7xwku3MAgVlIVwqFO8ubZh-0QA/exec';
-const VERSAO_APP = '2026-10-22.10';
+const VERSAO_APP = '2026-10-22.13';
 const RAIO_LISTA_M = 250;           // acessos mais perto que isso aparecem na lista
 const AVISO_DIST_M = 300, JUST_DIST_M = 500;
 
@@ -116,7 +116,7 @@ function telaLogin(msg) {
       const r = await (await fetch(`${SERVIDOR}?acao=dados&token=${encodeURIComponent(t)}`)).json();
       if (!r.ok) return telaLogin(r.erro || 'código inválido');
       const p = await (await fetch(`${SERVIDOR}?acao=ping&token=${encodeURIComponent(t)}`)).json();
-      S.token = t; S.tecnico = p.tecnico; S.dados = {acessos: r.acessos, cts: r.cts, baixado_em: new Date().toISOString()};
+      S.token = t; S.tecnico = p.tecnico; S.dados = {acessos: r.acessos, cts: r.cts, visitas: r.visitas || [], baixado_em: new Date().toISOString()};
       await DB.set('token', t); await DB.set('tecnico', p.tecnico); await DB.set('dados', S.dados);
       telaInicio();
     } catch (e) { telaLogin('Sem internet — tente de novo onde tiver sinal.'); }
@@ -132,9 +132,17 @@ async function telaInicio() {
     <p class="dica">Acessos atualizados em ${S.dados ? new Date(S.dados.baixado_em).toLocaleString('pt-BR') : '—'} · app ${VERSAO_APP}</p>`;
   $('#sinc').onclick = sincronizar;
   const m = L.map('mapa', {zoomControl: true}).setView([-29.2, -51.5], 8);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom: 19, attribution: '© OpenStreetMap'}).addTo(m);
+  // satélite por padrão (o campo se acha melhor), com botão p/ o mapa de ruas; a escolha fica guardada no celular
+  const sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {maxZoom: 19, attribution: 'Imagem © Esri'});
+  const nomes = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {maxZoom: 19});
+  const ruas = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom: 19, attribution: '© OpenStreetMap'});
+  const fundo = {'Satélite': L.layerGroup([sat, nomes]), 'Mapa de ruas': ruas};
+  const escolhido = (await DB.get('fundo_mapa')) || 'Satélite';
+  (fundo[escolhido] || fundo['Satélite']).addTo(m);
+  L.control.layers(fundo, null, {position: 'topright', collapsed: false}).addTo(m);
+  m.on('baselayerchange', e => DB.set('fundo_mapa', e.name));
   const camada = L.layerGroup().addTo(m);
-  S.dados.acessos.forEach(a => { const mk = L.circleMarker([+a.lat, +a.lon], {radius: 6, color: '#2f5597', weight: 2, fillOpacity: .7})
+  S.dados.acessos.forEach(a => { const mk = L.circleMarker([+a.lat, +a.lon], {radius: 7, color: '#1d2433', weight: 2, fillColor: '#f4d03f', fillOpacity: .95})   // amarelo: aparece no satélite
     .bindTooltip(a.codigo).on('click', () => escolherAcesso(a)); mk.addTo(camada); });
   let eu = null, centrou = false;
   window.atualizaMapa = () => {
@@ -169,7 +177,7 @@ async function sincronizar(manual = true) {   // envia a fila (só apaga do celu
     if (!S.v) telaInicio();
     if (!erro) {
       try { const r = await pega(`${SERVIDOR}?acao=dados&token=${encodeURIComponent(S.token)}`);
-        if (r.ok) { S.dados = {acessos: r.acessos, cts: r.cts, baixado_em: new Date().toISOString()}; await DB.set('dados', S.dados); if (!S.v) telaInicio(); } }
+        if (r.ok) { S.dados = {acessos: r.acessos, cts: r.cts, visitas: r.visitas || [], baixado_em: new Date().toISOString()}; await DB.set('dados', S.dados); if (!S.v) telaInicio(); } }
       catch (e) { if (manual) aviso('Não consegui atualizar a lista de acessos agora (uso a que já está no celular).', 'erro'); }
     }
   } finally { sincronizando = false; }
@@ -208,9 +216,12 @@ function PASSOS() {                    // lista de telas conforme as respostas (
   p.push('status');
   if (st === 'Ausente' || st === 'Recusa') { if (st === 'Recusa') p.push('quem_recusou'); p.push('aviso'); if (r.aviso === 'Sim') p.push('foto_aviso'); if (st === 'Ausente') p.push('vizinho'); }
   p.push('fotos_acesso');
-  if (st === ACEITOU) p.push(...Q.filter(q => !q.quando || q.quando(r)).map(q => q.id));
+  // ordem: fundiária inteira (dados da pessoa → observação → pendência → assinatura) e SÓ DEPOIS a socioeconômica
+  const vale = q => !q.quando || q.quando(r), iSocio = Q.findIndex(q => q.id === 'socio_aceitou');
+  if (st === ACEITOU) { p.push('copiar'); if (r.copiar === COPIAR_SIM) p.push('copiar_busca'); p.push(...Q.slice(0, iSocio).filter(vale).map(q => q.id)); }
   p.push('obs', 'pendente'); if (r.pendente === 'Sim') p.push('pendente_o_que');
   p.push('assinatura'); if (r.assinatura_svg_nao) p.push('sem_assinatura');
+  if (st === ACEITOU) p.push(...Q.slice(iSocio).filter(vale).map(q => q.id));
   p.push('revisao');
   return p;
 }
@@ -238,7 +249,9 @@ function texto(campo, titulo, {dica, min = 2, multilinha = false, naoInf} = {}) 
   const atual = S.v.r[campo] === naoInf ? '' : (S.v.r[campo] || '');
   moldura(titulo, (multilinha ? `<textarea id="in">${esc(atual)}</textarea>` : `<input id="in" type="text" value="${esc(atual)}">`) +
     (naoInf ? `<button class="btn sec" id="naoinf">${esc(naoInf)}</button>` : ''),
-    {dica, valido: () => { const v = $('#in').value.trim();
+    {dica: (dica || '') + (naoInf && S.v.r[campo] === naoInf ? ` <b>Marcado: "${esc(naoInf)}"</b> — toque em Próximo para manter, ou escreva.` : ''),
+     valido: () => { const v = $('#in').value.trim();
+      if (!v && naoInf && S.v.r[campo] === naoInf) return true;
       if (!v) return naoInf ? `Escreva ou toque em "${naoInf}".` : 'Campo obrigatório.';
       if (v.length < min) return `Escreva pelo menos ${min} caracteres.`; S.v.r[campo] = v; return true; }});
   if (naoInf) $('#naoinf').onclick = () => { S.v.r[campo] = naoInf; S.v.passo++; passo(); };
@@ -372,7 +385,6 @@ const Q = [
    dica: 'Fotografe os documentos que a pessoa mostrou. Se não mostrou nenhum, toque em "Nenhuma foto".'},
   // ---- socioeconômica (só pessoa física)
   {id: 'socio_aceitou', tipo: 'escolha', titulo: 'A pessoa ACEITOU responder a ficha SOCIOECONÔMICA?', op: ['Sim', 'Não', 'Não se aplica (não reside no imóvel)'], quando: PF},
-  {id: 'socio_motivo', tipo: 'texto', titulo: 'Por que não respondeu a socioeconômica?', quando: r => PF(r) && r.socio_aceitou === 'Não'},
   {id: 'total_pessoas', tipo: 'int', titulo: '01.01 Quantas pessoas residem no imóvel?', quando: SO, faixa: [1, 30]},
   {id: 'criancas', tipo: 'int', titulo: 'a) Crianças (0 a 17 anos)', quando: SO, faixa: [0, 30],
    valida: (v, r) => v <= num(r.total_pessoas) || 'Passou do total de moradores.'},
@@ -425,11 +437,119 @@ const Q = [
   {id: 'qtd_cronica', tipo: 'int', titulo: 'Quantas pessoas com doença crônica ou grave?', quando: r => SO(r) && (r.marcadores || []).some(m => m.startsWith('Pessoa com doença')),
    faixa: r => [1, num(r.total_pessoas)]},
   {id: 'socio_status', tipo: 'escolha', titulo: 'Status da ficha socioeconômica', op: ['Respondeu todas as perguntas', 'Respondeu parcialmente'], quando: SO},
-  {id: 'socio_obs', tipo: 'texto', titulo: '03 OBSERVAÇÕES (socioeconômica)', multilinha: true, quando: SO, naoInf: 'Sem observações'},
+  // observação da socio: sempre aparece depois do "aceitou?"; "Não" pula todas as perguntas e já traz o texto padrão (editável)
+  {id: 'socio_obs', tipo: 'texto', titulo: '03 OBSERVAÇÕES (socioeconômica)', multilinha: true, quando: r => PF(r) && !!r.socio_aceitou,
+   naoInf: r => r.socio_aceitou === 'Sim' ? 'Sem observações' : r.socio_aceitou === 'Não' ? 'Não aceitou responder o questionário socioeconômico.'
+     : 'Não se aplica — não reside no imóvel.'},
   {id: 'assin_socio', tipo: 'assinatura', titulo: 'Assinatura do DECLARANTE (socioeconômica)', quando: SO},
-  {id: 'assin_socio_motivo', tipo: 'texto', titulo: 'Por que o declarante não assinou a socioeconômica?', quando: r => SO(r) && r.assin_socio_nao},
+  {id: 'assin_socio_motivo', tipo: 'texto', titulo: 'Por que o declarante não assinou a socioeconômica?', quando: r => SO(r) && r.assin_socio_nao, naoInf: 'Recusou-se a assinar'},
 ];
 const QI = Object.fromEntries(Q.map(q => [q.id, q]));
+
+// ---- pergunta ↔ coluna da planilha (gravar E copiar de outro cadastro usam o mesmo mapa)
+const COL_PESSOA = {pf_pj: 'É pessoa física ou jurídica ?', relacao: 'Relação com o imóvel', matricula: 'Possui matrícula do imóvel ou documento equivalente?',
+  tit_nome: 'Nome completo', tit_cpf: 'CPF', tit_rg: 'RG Nº', tit_nasc: 'Data de nascimento', tit_tel: 'Telefone (WhatsApp)', estado_civil: 'Estado civil',
+  conj_nome: 'Cônjuge/companheiro(a)', conj_cpf: 'CPF do cônjuge', conj_rg: 'RG Nº do cônjuge', conj_nasc: 'Data de nascimento do cônjuge', conj_tel: 'Telefone (WhatsApp) do cônjuge',
+  razao: 'Razão social', cnpj: 'CNPJ', regime: 'Regime tributário (declarado)', simples: 'Optante do simples nacional?',
+  rep_nome: 'Representante legal', rep_cpf: 'CPF do representante legal', rep_rg: 'RG Nº do representante legal', rep_nasc: 'Data de nascimento do representante legal',
+  rep_tel: 'Telefone (WhatsApp) do representante legal', rep_estado_civil: 'Estado civil do representante legal',
+  repc_nome: 'Cônjuge/companheiro(a) do representante legal', repc_cpf: 'CPF do cônjuge do representante legal', repc_rg: 'RG Nº do cônjuge do representante legal',
+  repc_nasc: 'Data de nascimento do cônjuge do representante legal', repc_tel: 'Telefone (WhatsApp) do cônjuge do representante legal',
+  dap: 'Possui declaração de aptidão ao PRONAF (DAP/CAF)?', cadunico: 'Está inscrito no cadastro único (CadUnico) ou equivalente?'};
+const COL_SOCIO = {socio_aceitou: 'Aceitou responder a ficha socioeconômica?',
+  total_pessoas: 'Quantidade de pessoas que residem no imóvel?', criancas: 'Número de crianças (0 a 17 anos)', adultos: 'Número de adultos (18 anos ou mais)',
+  idosos: 'Número de idosos ( ≥ 60 anos)', renda_inf: 'renda_informada', renda_total: 'Renda familiar bruta TOTAL mensal (somar todas as rendas)',
+  despesas50: 'As despesas essenciais da família (alimentação, moradia, água, energia, saúde e transporte) comprometem mais de 50% da renda familiar?',
+  saude: 'Realiza gastos mensais com tratamento de saúde ou aquisição de medicamentos de uso contínuo?', saude_valor: 'Qual o valor médio mensal? R$',
+  pensao: 'Paga pensão alimentícia a dependentes?', pensao_valor: 'Quanto (valor médio mensal)? R$', veiculo: 'A família possui veículo automotor (carro, moto, caminhão)?',
+  veic_tipo: 'Qual o tipo?', veic_ano: 'Qual o ano aproximado?', veic_trabalho: 'É utilizado como instrumento de trabalho?',
+  beneficio: 'Recebe Bolsa Família, Benefício de Prestação Continuada ou outro benefício do governo?', benef_qual: 'Qual?', reside: 'O imóvel onde reside é',
+  outro_imovel: 'A família possui outro imóvel?', outro_qtd: 'Quantos?', outro_onde: 'Onde?', tempo: 'Qual o tempo de residência no local (anos)?',
+  uso: 'O imóvel é utilizado para', falta: 'Falta água encanada, luz o dia todo ou rede de esgoto?', falta_o_que: 'O que falta?',
+  escolaridade: 'Nível de escolaridade do principal responsável (financeiro) pelo domicílio', marcadores: 'A família possui algum dos seguintes marcadores sociais?',
+  qtd_pcd: 'Quantas? — Pessoa com deficiência', qtd_cronica: 'Quantas? — Pessoa com doença crônica ou grave',
+  socio_status: 'Respondeu todas as perguntas / Respondeu parcialmente', socio_obs: 'Observações (socioeconômica)'};
+const DO_IMOVEL = ['relacao', 'matricula'];   // são do imóvel/CT, não da pessoa → nunca copia
+
+// ---- "copiar cadastro de outro acesso": busca a pessoa (servidor + histórico do celular) e preenche; o técnico vai confirmando tela por tela
+const COPIAR_SIM = 'Sim — buscar e copiar os dados dela', COPIAR = 'Esta pessoa já foi cadastrada em OUTRO acesso?';
+const mascaraDoc = d => { const s = String(d || ''); return s.length > 8 ? s.slice(0, 4) + s.slice(4, -3).replace(/\d/g, '•') + s.slice(-3) : s; };
+const normTxt = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+// busca letra a letra: item leve {id, nome, doc, codigo, ct, data, tecnico, socio, nomes, docs, full?}; mesma regra do servidor (buscar_)
+const porDocumento = t => /^[\d.\-\/\s]+$/.test(t);
+const buscaValida = t => (porDocumento(t) ? so(t).length : t.trim().length) >= 3;
+const casaBusca = (it, t) => porDocumento(t) ? String(it.docs).includes(so(t)) : normTxt(it.nomes).includes(normTxt(t));
+const itemLocal = x => { const v = x.visita;   // cadastro guardado neste celular → mesmo formato da lista do servidor
+  return {id: v.id_envio, nome: v['Nome completo'] || v['Razão social'], doc: v['CPF'] || v['CNPJ'], codigo: v['Código'], ct: v['CT Nº'], data: v['Data da visita'],
+    tecnico: v.tecnico, socio: !!(x.socio && x.socio['Aceitou responder a ficha socioeconômica?'] === 'Sim'), local: true, full: x,
+    nomes: ['Nome completo', 'Cônjuge/companheiro(a)', 'Razão social', 'Representante legal', 'Cônjuge/companheiro(a) do representante legal'].map(k => v[k]).filter(Boolean).join(' | '),
+    docs: ['CPF', 'CPF do cônjuge', 'CNPJ', 'CPF do representante legal', 'CPF do cônjuge do representante legal'].map(k => so(v[k])).filter(Boolean).join(' ')}; };
+let cacheBusca = null;                 // {termo, lista, completo} da última ida ao servidor → as letras seguintes filtram aqui mesmo
+function aplicarCopia(x, pessoais, socio) {
+  const r = S.v.r, multi = new Set(Q.filter(q => q.tipo === 'multi').map(q => q.id)), nums = new Set(Q.filter(q => ['int', 'dinheiro'].includes(q.tipo)).map(q => q.id));
+  const val = (id, v) => { if (v === '' || v == null) return undefined; v = String(v);
+    if (multi.has(id)) return v.split(', ').filter(Boolean);
+    if (id.endsWith('_nasc') && /^\d{2}\/\d{2}\/\d{4}$/.test(v)) return v.split('/').reverse().join('-');
+    if (nums.has(id) && !isNaN(num(v))) return num(v);
+    return v; };
+  const limpa = ids => ids.forEach(id => delete r[id]);
+  if (pessoais) { limpa(Object.keys(COL_PESSOA).filter(id => !DO_IMOVEL.includes(id)));
+    for (const [id, col] of Object.entries(COL_PESSOA)) if (!DO_IMOVEL.includes(id)) { const v = val(id, x.visita[col]); if (v !== undefined) r[id] = v; } }
+  if (socio && x.socio && x.socio['Aceitou responder a ficha socioeconômica?'] === 'Sim') { limpa(Object.keys(COL_SOCIO));
+    for (const [id, col] of Object.entries(COL_SOCIO)) { const v = val(id, x.socio[col]); if (v !== undefined) r[id] = v; }
+    if (r.socio_obs) r.socio_obs = String(r.socio_obs).replace(/\s*\(declarante não assinou:.*\)$/, '') || 'Sem observações'; }
+  r.copiado_de = `${x.visita['Código']} · CT ${x.visita['CT Nº']} · ${x.visita['Data da visita']}` + (pessoais ? ' · dados pessoais' : '') + (socio && x.socio ? ' · socioeconômica' : '');
+}
+function telaCopiar() {
+  const r = S.v.r;
+  const d = el(`<div><input id="busca" type="search" placeholder="🔍 Digite o nome ou o CPF/CNPJ" value="${esc(r.copia_termo || '')}" autocomplete="off">
+    <div class="dica" id="bmsg">A lista vai filtrando a cada letra (a partir de 3).</div><div id="res" class="lista"></div>
+    <label class="cartao" style="display:block;font-size:16px"><input type="checkbox" id="cp_pes" ${r.copia_pes === false ? '' : 'checked'}> Copiar os DADOS PESSOAIS (nome, CPF, RG, nascimento, telefone, estado civil, cônjuge, DAP, CadÚnico)</label>
+    <label class="cartao" style="display:block;font-size:16px"><input type="checkbox" id="cp_soc" ${r.copia_soc === false ? '' : 'checked'}> Copiar a FICHA SOCIOECONÔMICA (se ela tiver respondido)</label>
+    <button class="btn sec" id="semcopia">Não encontrei — preencher do zero</button></div>`);
+  moldura('Buscar o cadastro já feito desta pessoa', d, {dica: 'Copia só o que é DA PESSOA. Relação com o imóvel, matrícula, fotos e observação você preenche de novo. Depois é só ir confirmando tela por tela.',
+    valido: () => { const x = S.v.copiaSel;
+      if (!x) return S.v.copiaItem ? 'Aguarde carregar o cadastro escolhido.' : 'Digite o nome ou CPF e toque no cadastro certo — ou toque em "Não encontrei".';
+      const pes = $('#cp_pes').checked, soc = $('#cp_soc').checked; if (!pes && !soc) return 'Marque o que quer copiar.';
+      const chave = `${x.visita.id_envio}|${pes}|${soc}`;
+      if (S.v.copiaAplicada !== chave) { aplicarCopia(x, pes, soc); S.v.copiaAplicada = chave; }   // voltar e avançar de novo não apaga o que já foi corrigido
+      r.copia_pes = pes; r.copia_soc = soc; return true; }});
+  const MAX_LISTA = 30;
+  const mostra = (lista, msg) => { $('#bmsg').textContent = msg; $('#res').innerHTML = '';
+    lista.slice(0, MAX_LISTA).forEach(it => { const b = el(`<button class="${S.v.copiaItem && S.v.copiaItem.id === it.id ? 'sel' : ''}"><b>${esc(it.nome)}</b> · ${esc(mascaraDoc(it.doc))}<br><small>${esc(it.codigo)} · CT ${esc(it.ct)} · ${esc(it.data)}${it.tecnico ? ' · ' + esc(it.tecnico) : ''}${it.socio ? ' · tem socioeconômica' : ''}${it.local ? ' · deste celular' : ''}</small></button>`);
+      b.onclick = async () => { [...$('#res').children].forEach(y => y.classList.remove('sel')); b.classList.add('sel'); S.v.copiaItem = it; S.v.copiaSel = it.full || null;
+        if (!it.full) {                  // veio da busca leve do servidor → baixa a ficha completa só deste
+          $('#err').textContent = 'Carregando o cadastro…';
+          try { const c = await api({acao: 'cadastro', token: S.token, id: it.id}, 25000);
+            if (S.v.copiaItem !== it) return; if (!c.ok) { $('#err').textContent = c.erro; return; }
+            it.full = {visita: c.visita, socio: c.socio}; S.v.copiaSel = it.full; $('#err').textContent = ''; }
+          catch (e) { $('#err').textContent = 'Sem sinal para carregar este cadastro agora. Tente de novo ou preencha do zero.'; } } };
+      $('#res').appendChild(b); });
+    if (lista.length > MAX_LISTA) $('#res').appendChild(el(`<div class="dica">… e mais ${lista.length - MAX_LISTA}. Continue digitando para filtrar.</div>`)); };
+  let seq = 0, espera;
+  const atualiza = async () => {
+    const termo = $('#busca').value.trim(), meu = ++seq; r.copia_termo = termo;
+    if (!buscaValida(termo)) return mostra([], 'A lista vai filtrando a cada letra (a partir de 3 letras ou 3 números).');
+    const locais = ((await DB.get('historico')) || []).map(itemLocal).filter(it => casaBusca(it, termo));
+    let doServidor = [], msg = '';
+    const reaproveita = cacheBusca && cacheBusca.completo && porDocumento(cacheBusca.termo) === porDocumento(termo) &&
+      (porDocumento(termo) ? so(termo).includes(so(cacheBusca.termo)) : normTxt(termo).includes(normTxt(cacheBusca.termo)));
+    if (reaproveita) doServidor = cacheBusca.lista.filter(it => casaBusca(it, termo));   // letra a mais → filtra aqui, na hora
+    else if (navigator.onLine) {
+      mostra(locais, 'Buscando…');
+      try { const res = await api({acao: 'buscar', token: S.token, termo}, 25000); if (meu !== seq) return;
+        if (res.ok) { cacheBusca = {termo, lista: res.resultados, completo: res.completo}; doServidor = res.resultados; } else msg = res.erro + ' '; }
+      catch (e) { if (meu !== seq) return; msg = 'Sinal fraco — mostrando só o que foi feito neste celular. '; }
+    } else msg = 'Sem internet — mostrando só o que foi feito neste celular. ';
+    if (meu !== seq) return;
+    const lista = [...locais, ...doServidor.filter(it => !locais.some(l => l.id === it.id))];
+    mostra(lista, msg + (lista.length ? `${lista.length} cadastro(s) — toque no certo.` : 'Nenhum cadastro encontrado.'));
+  };
+  $('#busca').oninput = () => { clearTimeout(espera); espera = setTimeout(atualiza, 300); };
+  $('#semcopia').onclick = () => { r.copiar = 'Não'; delete S.v.copiaSel; delete S.v.copiaItem; passo(); };   // a tela de busca sai da lista → passo atual já é a próxima
+  if (S.v.copiaItem) mostra([S.v.copiaItem], 'Cadastro escolhido:'); else if (r.copia_termo) atualiza();
+  $('#busca').focus();
+}
 const ativa = id => { const q = QI[id]; return !!q && S.v.r.status === ACEITOU && (!q.quando || q.quando(S.v.r)); };
 
 function multi(q) {                    // marcar vários; "Nenhum…" não combina com os outros
@@ -473,6 +593,8 @@ function normaliza(q, v) {
 
 function perguntar(q) {
   const r = S.v.r, dica = typeof q.dica === 'function' ? q.dica(r) : (q.dica || '');
+  if (typeof q.naoInf === 'function') q = {...q, naoInf: q.naoInf(r)};   // texto padrão que depende da resposta (ex.: socio "Não")
+  if (q.id === 'socio_obs' && r.socio_aceitou !== 'Sim' && (!r.socio_obs || r.socio_obs === 'Sem observações')) r.socio_obs = q.naoInf;   // já vem marcado: só confirmar
   if (q.tipo === 'escolha') return escolha(q.id, q.titulo, q.op, {dica});
   if (q.tipo === 'multi') return multi(q);
   if (q.tipo === 'foto') return foto(q.id, q.titulo, {min: typeof q.min === 'function' ? q.min(r) : (q.min || 0), dica});
@@ -485,7 +607,9 @@ function perguntar(q) {
   const cal = q.tipo === 'nasc' ? `<button class="btn sec" id="cal">📅 Escolher no calendário</button><input id="cald" type="date" max="${hoje()}" style="position:absolute;opacity:0;width:1px;height:1px">` : '';
   moldura(q.titulo, `<input id="in" type="${cfg.t || 'text'}" ${cfg.m ? `inputmode="${cfg.m}"` : ''} placeholder="${cfg.ph || ''}" value="${esc(atual)}"
       autocomplete="off">` + cal + (q.naoInf ? `<button class="btn sec" id="naoinf">${esc(q.naoInf)}</button>` : ''),
-    {dica, valido: () => { const v = $('#in').value.trim();
+    {dica: dica + (q.naoInf && r[q.id] === q.naoInf ? ` <b>Marcado: "${esc(q.naoInf)}"</b> — toque em Próximo para manter, ou preencha.` : ''),
+     valido: () => { const v = $('#in').value.trim();
+      if (!v && q.naoInf && r[q.id] === q.naoInf) return true;          // já estava "Não quis informar" (ex.: veio copiado) → confirma
       if (!v) return q.naoInf ? `Preencha ou toque em "${q.naoInf}".` : 'Campo obrigatório.';
       const e = validar(q, v, r); if (e !== true) return e; r[q.id] = normaliza(q, v); return true; }});
   if (q.naoInf) $('#naoinf').onclick = () => { r[q.id] = q.naoInf; S.v.passo++; passo(); };
@@ -499,8 +623,37 @@ function perguntar(q) {
 const MESES_EXT = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
 const localData = (mun, d = new Date()) => `${mun}/RS, ${d.getDate()} de ${MESES_EXT[d.getMonth()]} de ${d.getFullYear()}`;
 
+// CTs do acesso = base (Geo) + visitas feitas pelo app (servidor) + as deste celular (inclusive as que ainda não subiram)
+// encerra quando: Concluído, Recusa, Abandonado ou 3ª ausência ("Ausência total"); senão segue em aberto
+const nomeAcesso = cod => String(cod).replace(/[^0-9A-Za-z]+/g, '_').replace(/^_|_$/g, '');
+const isoData = d => /^\d{2}\/\d{2}\/\d{4}$/.test(d) ? d.split('/').reverse().join('-') : String(d || '');
+async function ctsDoAcesso(a) {
+  const minhas = (await DB.get('minhas')) || [], vistos = new Set();
+  const vis = [...(S.dados.visitas || []), ...minhas].filter(v => nomeAcesso(v.codigo) === a.name && !vistos.has(v.id) && vistos.add(v.id))
+    .sort((x, y) => (isoData(x.data) + x.id).localeCompare(isoData(y.data) + y.id));
+  const lista = S.dados.cts.filter(c => c.acesso === a.name && !String(c.name).endsWith('__NOVO')).map(c => ({...c, ct: dois(+so(c.ct)), app: []}));
+  for (const v of vis) { const ct = dois(+so(v.ct) || 1); let c = lista.find(x => x.ct === ct);
+    if (!c) { c = {name: `${a.name}__${ct}`, acesso: a.name, ct, visitas: 0, encerrado: 0, desfecho: '', titular: '', app: []}; lista.push(c); }
+    c.app.push(v); }
+  for (const c of lista) {
+    if (!c.app.length) continue;
+    let n = +c.visitas || 0, enc = String(c.encerrado) === '1', aus = enc ? 0 : n, ult;   // base "em aberto" = só ausências até aqui
+    for (const v of c.app) { n++; ult = v; const st = v.aband === 'Sim' ? 'Abandonado' : v.status;
+      if (v.titular) c.titular = v.titular;
+      if (st === 'Ausente') aus++;
+      if (!enc && ['Concluído', 'Recusa', 'Abandonado'].includes(st)) { enc = true; c.desfecho = st; }
+      else if (!enc && aus >= 3) { enc = true; c.desfecho = 'Ausência total'; } }
+    const stUlt = ult.aband === 'Sim' ? 'Abandonado' : ult.status;
+    Object.assign(c, {visitas: n, proxima: Math.min(n + 1, 9), encerrado: enc ? 1 : 0,
+      label: `CT ${c.ct} — ${n} visita(s), última ${String(ult.data).slice(0, 5)} ${stUlt}` + (c.titular ? ` — ${c.titular}` : '') + (enc ? ` — ENCERRADO (${c.desfecho})` : '')}); }
+  lista.sort((x, y) => x.ct.localeCompare(y.ct));
+  const prox = dois(Math.max(0, ...lista.map(c => +c.ct)) + 1);
+  lista.push({name: `${a.name}__NOVO`, label: `Imóvel NOVO neste acesso (vira CT ${prox}, 1ª visita)`, acesso: a.name, ct: prox, visitas: 0, proxima: 1, encerrado: 0});
+  return lista;
+}
+
 async function telaCT() {
-  const a = S.v.acesso, cts = S.dados.cts.filter(c => c.acesso === a.name);
+  const a = S.v.acesso, cts = await ctsDoAcesso(a);
   const d = el('<div class="lista"></div>');
   // no app o campo vê "Aceitou a entrevista" no lugar de "Concluído" (inclusive no histórico do CT)
   cts.forEach(c => { const b = el(`<button class="${S.v.r.ct_name === c.name ? 'sel' : ''}">${esc(String(c.label).replace(/Concluído/g, 'Aceitou a entrevista'))}</button>`);
@@ -535,7 +688,13 @@ function passo() {
   if (nome === 'confirma_encerrado') return escolha('confirma_encerrado', 'Este CT já está ENCERRADO. Precisa mesmo de outra visita?', ['Sim, preciso'], {});
   if (COL[nome]) return escolha(nome, COL[nome], OP[nome], {dica: 'Já vem marcado o que sabemos deste acesso — confira e corrija se precisar.'});
   if (nome === 'alternativa') return texto('alternativa', 'Qual é a alternativa de acesso?');
-  if (nome === 'status') return escolha('status', `Resultado desta visita ao CT ${r.ct} (${r.tentativa}ª visita)`, OP.status);
+  if (nome === 'status') {               // "Abandonado / ruína" só na 1ª visita do CT
+    const ops = r.tentativa === '1' ? OP.status : OP.status.filter(o => o !== 'Abandonado / ruína');
+    if (!ops.includes(r.status)) delete r.status;
+    return escolha('status', `Resultado desta visita ao CT ${r.ct} (${r.tentativa}ª visita)`, ops);
+  }
+  if (nome === 'copiar') return escolha('copiar', COPIAR, ['Não', COPIAR_SIM], {dica: 'Ex.: a mesma pessoa já foi cadastrada pelo app em outro acesso. Copia só os dados dela (não os do imóvel).'});
+  if (nome === 'copiar_busca') return telaCopiar();
   if (QI[nome]) return perguntar(QI[nome]);
   if (nome === 'quem_recusou') return texto('quem_recusou', 'Quem recusou? (nome e relação com o imóvel, se souber)', {naoInf: 'Não quis se identificar'});
   if (nome === 'aviso') return escolha('aviso', 'Deixou aviso/adesivo com telefone?', ['Sim', 'Não']);
@@ -547,7 +706,7 @@ function passo() {
   if (nome === 'pendente_o_que') return texto('pendente_o_que', 'O que ficou pendente?');
   if (nome === 'assinatura') return assinatura();
   if (nome === 'sem_assinatura') return texto('sem_assinatura', 'Por que não assinou?',
-    {naoInf: ['Ausente', 'Abandonado / ruína'].includes(r.status) ? 'Ninguém no local para assinar' : null});
+    {naoInf: ['Ausente', 'Abandonado / ruína'].includes(r.status) ? 'Ninguém no local para assinar' : 'Recusou-se a assinar'});
   if (nome === 'revisao') return revisao();
 }
 
@@ -581,39 +740,15 @@ async function salvar() {
   // parte 3: só grava o que está valendo (resposta de tela que deixou de existir ao voltar e trocar não entra)
   const v3 = id => { if (!ativa(id)) return ''; const x = r[id];
     return Array.isArray(x) ? x.join(', ') : (id.endsWith('_nasc') ? dataBR(x) : (x ?? '')); };
-  if (st === ACEITOU) Object.assign(visita, {
-    'É pessoa física ou jurídica ?': v3('pf_pj'), 'Relação com o imóvel': v3('relacao'), 'Possui matrícula do imóvel ou documento equivalente?': v3('matricula'),
-    'Nome completo': v3('tit_nome'), CPF: v3('tit_cpf'), 'RG Nº': v3('tit_rg'), 'Data de nascimento': v3('tit_nasc'), 'Telefone (WhatsApp)': v3('tit_tel'),
+  if (st === ACEITOU) Object.assign(visita, Object.fromEntries(Object.entries(COL_PESSOA).map(([id, col]) => [col, v3(id)])), {
     'Dados pessoais (situação)': situacaoDados(r).sit,
     motivo_sem_documento: situacaoDados(r).recusou.length ? 'Não quis informar: ' + situacaoDados(r).recusou.join(', ') : '',
-    'Estado civil': v3('estado_civil'), 'Cônjuge/companheiro(a)': v3('conj_nome'), 'CPF do cônjuge': v3('conj_cpf'), 'RG Nº do cônjuge': v3('conj_rg'),
-    'Data de nascimento do cônjuge': v3('conj_nasc'), 'Telefone (WhatsApp) do cônjuge': v3('conj_tel'),
-    'Razão social': v3('razao'), CNPJ: v3('cnpj'), 'Regime tributário (declarado)': v3('regime'), 'Optante do simples nacional?': v3('simples'),
-    'Representante legal': v3('rep_nome'), 'CPF do representante legal': v3('rep_cpf'), 'RG Nº do representante legal': v3('rep_rg'),
-    'Data de nascimento do representante legal': v3('rep_nasc'), 'Telefone (WhatsApp) do representante legal': v3('rep_tel'),
-    'Estado civil do representante legal': v3('rep_estado_civil'), 'Cônjuge/companheiro(a) do representante legal': v3('repc_nome'),
-    'CPF do cônjuge do representante legal': v3('repc_cpf'), 'RG Nº do cônjuge do representante legal': v3('repc_rg'),
-    'Data de nascimento do cônjuge do representante legal': v3('repc_nasc'), 'Telefone (WhatsApp) do cônjuge do representante legal': v3('repc_tel'),
     'Renda familiar per capita': PF(r) ? (faixaPC(r) || v3('renda_pc_pergunta')) : '',
-    'Possui declaração de aptidão ao PRONAF (DAP/CAF)?': v3('dap'), 'Está inscrito no cadastro único (CadUnico) ou equivalente?': v3('cadunico')});
+    'Copiado de': r.copiar === COPIAR_SIM && r.copiado_de ? r.copiado_de : ''});
   const socio = ativa('socio_aceitou') ? {'Código': a.codigo, 'CT Nº': r.ct, 'Data da visita': visita['Data da visita'],
-    'Aceitou responder a ficha socioeconômica?': v3('socio_aceitou'), motivo_nao_respondeu: v3('socio_motivo'),
-    'Quantidade de pessoas que residem no imóvel?': v3('total_pessoas'), 'Número de crianças (0 a 17 anos)': v3('criancas'),
-    'Número de adultos (18 anos ou mais)': v3('adultos'), 'Número de idosos ( ≥ 60 anos)': v3('idosos'), renda_informada: v3('renda_inf'),
-    'Renda familiar bruta TOTAL mensal (somar todas as rendas)': v3('renda_total'), renda_per_capita: perCapita(r) ?? '',
-    'As despesas essenciais da família (alimentação, moradia, água, energia, saúde e transporte) comprometem mais de 50% da renda familiar?': v3('despesas50'),
-    'Realiza gastos mensais com tratamento de saúde ou aquisição de medicamentos de uso contínuo?': v3('saude'), 'Qual o valor médio mensal? R$': v3('saude_valor'),
-    'Paga pensão alimentícia a dependentes?': v3('pensao'), 'Quanto (valor médio mensal)? R$': v3('pensao_valor'),
-    'A família possui veículo automotor (carro, moto, caminhão)?': v3('veiculo'), 'Qual o tipo?': v3('veic_tipo'), 'Qual o ano aproximado?': v3('veic_ano'),
-    'É utilizado como instrumento de trabalho?': v3('veic_trabalho'),
-    'Recebe Bolsa Família, Benefício de Prestação Continuada ou outro benefício do governo?': v3('beneficio'), 'Qual?': v3('benef_qual'),
-    'O imóvel onde reside é': v3('reside'), 'A família possui outro imóvel?': v3('outro_imovel'), 'Quantos?': v3('outro_qtd'), 'Onde?': v3('outro_onde'),
-    'Qual o tempo de residência no local (anos)?': v3('tempo'), 'O imóvel é utilizado para': v3('uso'),
-    'Falta água encanada, luz o dia todo ou rede de esgoto?': v3('falta'), 'O que falta?': v3('falta_o_que'),
-    'Nível de escolaridade do principal responsável (financeiro) pelo domicílio': v3('escolaridade'),
-    'A família possui algum dos seguintes marcadores sociais?': v3('marcadores'), 'Quantas? — Pessoa com deficiência': v3('qtd_pcd'),
-    'Quantas? — Pessoa com doença crônica ou grave': v3('qtd_cronica'), 'Respondeu todas as perguntas / Respondeu parcialmente': v3('socio_status'),
+    ...Object.fromEntries(Object.entries(COL_SOCIO).map(([id, col]) => [col, v3(id)])), renda_per_capita: perCapita(r) ?? '',
     'Observações (socioeconômica)': [v3('socio_obs'), v3('assin_socio_motivo') && `(declarante não assinou: ${v3('assin_socio_motivo')})`].filter(Boolean).join(' '),
+    motivo_nao_respondeu: r.socio_aceitou !== 'Sim' ? v3('socio_obs') : '',
     'Local e data': visita['Local e data']} : null;
   // arquivos: só de telas que valem (foto do aviso / documentos de tela abandonada não sobem)
   const telas = new Set(PASSOS());
@@ -624,6 +759,16 @@ async function salvar() {
   if (r.assinatura_svg) arquivos.push({tipo: 'assinatura', mime: 'image/svg+xml', base64: svg(r.assinatura_svg)});
   if (socio && ativa('assin_socio') && r.assin_socio) arquivos.push({tipo: 'assinatura_socio', mime: 'image/svg+xml', base64: svg(r.assin_socio)});
   await DB.filaPor({id_envio: S.v.id, visita, socio, arquivos, salvo_em: new Date().toISOString()});
+  {                                    // registro leve de TODA visita deste celular → próxima visita / CT encerrado certos, mesmo sem internet
+    const m = (await DB.get('minhas')) || [];
+    m.push({id: S.v.id, codigo: a.codigo, ct: r.ct, data: visita['Data da visita'], status: visita['Status da aplicação da ficha'],
+            aband: visita['O imóvel está abandonado/ruína?'], titular: visita['Nome completo'] || visita['Razão social'] || ''});
+    await DB.set('minhas', m.slice(-1000));
+  }
+  if (st === ACEITOU) {                // histórico do celular (sem fotos) → "copiar cadastro" funciona até sem internet
+    const h = (await DB.get('historico')) || [];
+    h.push({visita: {...visita, tecnico: S.tecnico}, socio}); await DB.set('historico', h.slice(-300));
+  }
   S.v = null;
   aviso('Visita salva no celular.' + (navigator.onLine ? ' Enviando…' : ' Será enviada quando tiver internet.'), 'ok');
   telaInicio();
