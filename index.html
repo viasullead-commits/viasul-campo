@@ -42,7 +42,7 @@ textarea{min-height:140px}
 <script>
 'use strict';
 const SERVIDOR = 'https://script.google.com/macros/s/AKfycbz-lzDXOHPw396P5CxXM3u2Uuu_tyFspxY5d39bw-EZ7xwku3MAgVlIVwqFO8ubZh-0QA/exec';
-const VERSAO_APP = '2026-10-22.4';
+const VERSAO_APP = '2026-10-22.5';
 const RAIO_LISTA_M = 250;           // acessos mais perto que isso aparecem na lista
 const AVISO_DIST_M = 300, JUST_DIST_M = 500;
 
@@ -472,7 +472,8 @@ const localData = (mun, d = new Date()) => `${mun}/RS, ${d.getDate()} de ${MESES
 async function telaCT() {
   const a = S.v.acesso, cts = S.dados.cts.filter(c => c.acesso === a.name);
   const d = el('<div class="lista"></div>');
-  cts.forEach(c => { const b = el(`<button class="${S.v.r.ct_name === c.name ? 'sel' : ''}">${esc(c.label)}</button>`);
+  // no app o campo vê "Aceitou a entrevista" no lugar de "Concluído" (inclusive no histórico do CT)
+  cts.forEach(c => { const b = el(`<button class="${S.v.r.ct_name === c.name ? 'sel' : ''}">${esc(String(c.label).replace(/Concluído/g, 'Aceitou a entrevista'))}</button>`);
     b.onclick = () => { S.v.r.ct_name = c.name; S.v.r.ct = String(c.ct).padStart(2, '0'); S.v.r.tentativa = String(c.proxima);
       S.v.r.novo = String(c.name).endsWith('__NOVO'); S.v.r.ct_encerrado = String(c.encerrado) === '1';
       [...d.children].forEach(x => x.classList.remove('sel')); b.classList.add('sel'); }; d.appendChild(b); });
