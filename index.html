@@ -58,7 +58,7 @@ body.commenu main{padding-bottom:84px}
 <script>
 'use strict';
 const SERVIDOR = 'https://script.google.com/macros/s/AKfycbz-lzDXOHPw396P5CxXM3u2Uuu_tyFspxY5d39bw-EZ7xwku3MAgVlIVwqFO8ubZh-0QA/exec';
-const VERSAO_APP = '2026-10-22.19';
+const VERSAO_APP = '2026-10-22.20';
 const RAIO_LISTA_M = 250;           // acessos mais perto que isso aparecem na lista
 const AVISO_DIST_M = 300, JUST_DIST_M = 500;
 
@@ -157,7 +157,7 @@ function telaRascunho(rasc) {
 
 // colaboradores (valor = nome que o servidor associa ao código; o código tem que ser DESSA pessoa)
 const COLABORADORES = [['Adailson', 'Adailson Silva'], ['Ailton', 'Ailton Marinho'], ['Alexandre', 'Alexandre Teixeira'], ['André', 'André'],
-  ['João', 'João Andrade'], ['Leidiane', 'Leidiane Magalhães'], ['Max', 'Maxciene Malaquias'], ['Matheus', 'Matheus (escritório)']];
+  ['João', 'João Andrade'], ['Laura', 'Laura'], ['Leidiane', 'Leidiane Magalhães'], ['Max', 'Maxciene Malaquias'], ['Matheus', 'Matheus (escritório)']];
 const nomeColab = n => (COLABORADORES.find(c => c[0] === n) || [n, n])[1];
 function telaLogin(msg, escolhido) {
   $('#hdr').textContent = ''; esconderMenu();
