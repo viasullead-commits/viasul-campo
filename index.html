@@ -6,6 +6,10 @@
 <meta name="theme-color" content="#1f3864">
 <title>ViaSul Campo</title>
 <link rel="manifest" href="manifest.json">
+<link rel="icon" href="icone-192.png">
+<link rel="apple-touch-icon" href="icone-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="ViaSul Campo">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
 :root{--az:#1f3864;--az2:#2f5597;--cinza:#f2f4f7;--txt:#1d2433;--verm:#c0392b;--verde:#1e8449;--amar:#f4d03f}
@@ -32,6 +36,14 @@ textarea{min-height:140px}
 .fotos .x{position:absolute;top:6px;right:6px;width:34px;height:34px;border:0;border-radius:50%;background:rgba(192,57,43,.9);color:#fff;font-size:18px}
 #assin{width:100%;height:180px;border:2px dashed #9aa7bd;border-radius:10px;touch-action:none;background:#fff}
 .barra{position:sticky;bottom:0;background:#fff;padding:8px 0;display:flex;gap:8px}.barra .btn{margin:0}
+/* menu de baixo (Mapa | Meu dia) — só nas telas iniciais, some durante a visita */
+#menu{position:fixed;left:0;right:0;bottom:0;display:none;background:#fff;border-top:1px solid #d5dbe5;z-index:1000;padding-bottom:env(safe-area-inset-bottom)}
+#menu button{flex:1;border:0;background:none;padding:10px 4px 12px;font-size:15px;color:#5b6475}
+#menu button.on{color:var(--az2);font-weight:700;box-shadow:inset 0 3px 0 var(--az2)}
+body.commenu main{padding-bottom:84px}
+.item{display:block;width:100%;text-align:left;padding:12px;margin:6px 0;border:1px solid #d5dbe5;border-radius:10px;background:#fff;font-size:15px}
+.pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;font-weight:600;background:#e4e8f0}
+.pill.ok{background:#d5f0df;color:#14532d}.pill.pend{background:#fff1c2;color:#7a5b00}.pill.and{background:#dbe7fb;color:#1f3864}
 .prog{height:6px;background:#e4e8f0;border-radius:3px;margin-bottom:12px}.prog div{height:6px;background:var(--az2);border-radius:3px}
 .tag{display:inline-block;padding:2px 8px;border-radius:12px;background:#e4e8f0;font-size:13px;margin-right:4px}
 .toast{position:fixed;left:12px;right:12px;bottom:16px;z-index:9999;max-width:620px;margin:0 auto;padding:14px;border-radius:10px;background:#1d2433;color:#fff;font-size:16px;box-shadow:0 4px 18px rgba(0,0,0,.25)}
@@ -41,11 +53,12 @@ textarea{min-height:140px}
 <body>
 <header><span>ViaSul Campo</span><small id="hdr"></small></header>
 <main id="tela"></main>
+<nav id="menu"><button id="m_mapa">🗺️<br>Mapa</button><button id="m_dia">📋<br>Meu dia</button></nav>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 'use strict';
 const SERVIDOR = 'https://script.google.com/macros/s/AKfycbz-lzDXOHPw396P5CxXM3u2Uuu_tyFspxY5d39bw-EZ7xwku3MAgVlIVwqFO8ubZh-0QA/exec';
-const VERSAO_APP = '2026-10-22.17';
+const VERSAO_APP = '2026-10-22.19';
 const RAIO_LISTA_M = 250;           // acessos mais perto que isso aparecem na lista
 const AVISO_DIST_M = 300, JUST_DIST_M = 500;
 
@@ -130,7 +143,7 @@ function salvarRascunho() {
 const descartarRascunho = () => DB.set('rascunho', null);
 function telaRascunho(rasc) {
   const v = rasc.v, ps = (() => { S.v = v; const p = PASSOS(); S.v = null; return p; })();
-  $('#hdr').textContent = `${nomeColab(S.tecnico)}`;
+  $('#hdr').textContent = `${nomeColab(S.tecnico)}`; esconderMenu();
   $('#tela').innerHTML = `<h2>Visita em andamento</h2>
     <div class="cartao"><b>${esc(v.acesso.codigo)}</b>${v.r.ct ? ' · CT ' + esc(v.r.ct) : ''}${v.r.tentativa ? ' · ' + esc(v.r.tentativa) + 'ª visita' : ''}<br>
       ${v.r.status ? esc(v.r.status) + ' · ' : ''}${v.fotos.length} foto(s) · parou na tela ${Math.min(v.passo + 1, ps.length)} de ${ps.length}<br>
@@ -147,8 +160,8 @@ const COLABORADORES = [['Adailson', 'Adailson Silva'], ['Ailton', 'Ailton Marinh
   ['João', 'João Andrade'], ['Leidiane', 'Leidiane Magalhães'], ['Max', 'Maxciene Malaquias'], ['Matheus', 'Matheus (escritório)']];
 const nomeColab = n => (COLABORADORES.find(c => c[0] === n) || [n, n])[1];
 function telaLogin(msg, escolhido) {
-  $('#hdr').textContent = '';
-  $('#tela').innerHTML = `<h2>Entrar</h2><p class="dica">Escolha o seu nome e digite o seu código de acesso (recebido do escritório). Precisa de internet só nesta primeira vez.</p>
+  $('#hdr').textContent = ''; esconderMenu();
+  $('#tela').innerHTML = `${botaoInstalar()}<h2>Entrar</h2><p class="dica">Escolha o seu nome e digite o seu código de acesso (recebido do escritório). Precisa de internet só nesta primeira vez.</p>
     <select id="colab"><option value="">— Quem é você? —</option>${COLABORADORES.map(([v, n]) => `<option value="${esc(v)}" ${v === escolhido ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
     <input id="cod" type="text" autocomplete="off" placeholder="código de acesso" style="margin-top:10px"><div class="erro">${esc(msg || '')}</div>
     <button class="btn" id="ent">Entrar e baixar os acessos</button>`;
@@ -179,10 +192,109 @@ async function trocarColaborador() {   // só com a fila vazia: visita pendente 
   telaLogin();
 }
 
+// ---------------- menu de baixo: Mapa | Meu dia ----------------
+function menu(qual) {
+  $('#menu').style.display = 'flex'; document.body.classList.add('commenu');
+  $('#m_mapa').classList.toggle('on', qual === 'mapa'); $('#m_dia').classList.toggle('on', qual === 'dia');
+  $('#m_mapa').onclick = () => telaInicio(); $('#m_dia').onclick = () => telaDia();
+}
+function esconderMenu() { $('#menu').style.display = 'none'; document.body.classList.remove('commenu'); }
+
+// ---------------- instalar como app (ícone na tela de início) ----------------
+let pedidoInstalar = null;
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); pedidoInstalar = e; document.querySelectorAll('.bt-instalar').forEach(b => b.style.display = 'block'); });
+window.addEventListener('appinstalled', () => { pedidoInstalar = null; document.querySelectorAll('.bt-instalar').forEach(b => b.remove()); aviso('App instalado na tela de início ✅', 'ok'); });
+const instalado = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const ehIphone = () => /iphone|ipad|ipod/i.test(navigator.userAgent);
+function botaoInstalar() {             // Android: botão chama o instalador; iPhone: mostra o passo a passo (o Safari não deixa instalar por botão)
+  if (instalado()) return '';
+  return `<button class="btn ok bt-instalar" style="display:${pedidoInstalar || ehIphone() ? 'block' : 'none'}" onclick="instalarApp()">📲 Instalar o app na tela de início</button>`;
+}
+async function instalarApp() {
+  if (pedidoInstalar) { pedidoInstalar.prompt(); const r = await pedidoInstalar.userChoice; if (r.outcome === 'accepted') pedidoInstalar = null; return; }
+  if (ehIphone()) return aviso('No iPhone: toque no botão Compartilhar (quadrado com seta ↑) do Safari → "Adicionar à Tela de Início" → Adicionar. Depois abra sempre pelo ícone ViaSul Campo.', '');
+  aviso('Abra este link no Chrome do celular e use o menu ⋮ → "Instalar app".', '');
+}
+
+// ---------------- relato de modificação (CT encerrado ou visita já salva: o campo não edita, só relata) ----------------
+async function relatar({codigo, ct, ref, titulo}) {
+  esconderMenu();
+  $('#hdr').textContent = `${codigo} · CT ${ct}`;
+  $('#tela').innerHTML = `<h2>${esc(titulo || 'Relatar modificação')}</h2>
+    <p class="dica">Descreva o que precisa ser corrigido ou complementado (ex.: nome escrito errado, telefone novo, documento entregue depois). O escritório faz a correção.</p>
+    <textarea id="rel" placeholder="O que mudou?"></textarea><div class="erro" id="err"></div>
+    <div class="barra"><button class="btn sec" id="volta">Cancelar</button><button class="btn ok" id="seg">Enviar relato</button></div>`;
+  $('#volta').onclick = () => telaDia();
+  $('#seg').onclick = async () => {
+    const t = $('#rel').value.trim(); if (t.length < 5) { $('#err').textContent = 'Escreva o que mudou (pelo menos 5 caracteres).'; return; }
+    const agora = new Date(), id = 'r' + uid().slice(1);
+    const relato = {id_envio: id, 'Código': codigo, 'CT Nº': ct, ref_visita: ref || '', relato: t, 'Data': dataBR(hoje(agora)), 'Hora': hora(agora),
+      gps_lat: S.gps ? S.gps.lat : '', gps_lon: S.gps ? S.gps.lon : '', aparelho: S.aparelho, versao_app: VERSAO_APP};
+    await DB.filaPor({id_envio: id, tipo: 'relato', relato, token: S.token, tecnico: S.tecnico, salvo_em: agora.toISOString()});
+    const m = (await DB.get('meus_relatos')) || []; m.push({id, codigo, ct, ref, texto: t, data: relato.Data, hora: relato.Hora, tecnico: S.tecnico}); await DB.set('meus_relatos', m.slice(-300));
+    aviso('Relato salvo.' + (navigator.onLine ? ' Enviando…' : ' Será enviado quando tiver internet.'), 'ok');
+    telaDia(); if (navigator.onLine) sincronizar(false);
+  };
+}
+
+// ---------------- Meu dia: TUDO o que esta pessoa fez (por data, mais recente primeiro) + contadores de hoje ----------------
+// fontes: visitas do servidor feitas por ela (qualquer celular) + as deste celular (inclusive as que ainda não subiram) + relatos
+const isoDia = d => /^\d{2}\/\d{2}\/\d{4}$/.test(d) ? d.split('/').reverse().join('-') : String(d || '');
+let diaMostrar = 60;                   // quantas visitas mostrar (botão "mostrar mais")
+async function telaDia() {
+  menu('dia');
+  const dia = dataBR(hoje()), fila = await DB.filaTodos(), pend = new Set(fila.map(f => f.id_envio));
+  const rasc = await DB.get('rascunho'), vistos = new Set();
+  const minhas = ((await DB.get('minhas')) || []).filter(v => !v.tecnico || v.tecnico === S.tecnico);
+  const doServidor = (S.dados && S.dados.visitas || []).filter(v => v.tecnico === S.tecnico);
+  const vis = [...minhas, ...doServidor].filter(v => v.id && !vistos.has(v.id) && vistos.add(v.id))
+    .map(v => ({...v, data: dataBR(v.data)}))
+    .sort((x, y) => (isoDia(y.data) + (y.hora || '')).localeCompare(isoDia(x.data) + (x.hora || '')));
+  const rel = ((await DB.get('meus_relatos')) || []).filter(x => !x.tecnico || x.tecnico === S.tecnico).reverse();
+  const deHoje = vis.filter(v => v.data === dia), conta = s => deHoje.filter(v => (v.aband === 'Sim' ? 'Abandonado' : v.status) === s).length;
+  $('#hdr').textContent = `${nomeColab(S.tecnico)} · ${fila.length} p/ enviar`;
+  $('#tela').innerHTML = `<h2>Meu dia</h2>
+    <div class="cartao"><b>Hoje (${dia}): ${deHoje.length}</b> visita(s) · Aceitou ${conta('Concluído')} · Ausente ${conta('Ausente')} · Recusa ${conta('Recusa')} · Abandonado ${conta('Abandonado')}<br>
+      Total já feito: <b>${vis.length}</b> visita(s) · <span class="pill ${fila.length ? 'pend' : 'ok'}">${fila.length ? fila.length + ' aguardando envio' : 'tudo enviado'}</span></div>
+    ${botaoInstalar()}
+    ${fila.length ? '<button class="btn sec" id="sinc">Enviar agora</button>' : ''}
+    <div id="lista_dia"></div>`;
+  if ($('#sinc')) $('#sinc').onclick = sincronizar;
+  const L0 = $('#lista_dia');
+  if (rasc && rasc.v) {
+    const v = rasc.v, b = el(`<button class="item"><span class="pill and">em andamento</span> <b>${esc(v.acesso.codigo)}</b>${v.r.ct ? ' · CT ' + esc(v.r.ct) : ''}<br><small>${v.r.status ? esc(v.r.status) + ' · ' : ''}${v.fotos.length} foto(s) · toque para continuar</small></button>`);
+    b.onclick = () => telaRascunho(rasc); L0.appendChild(b);
+  }
+  if (!vis.length && !(rasc && rasc.v)) L0.appendChild(el('<p class="dica">Nenhuma visita feita ainda.</p>'));
+  let dataAtual = '';
+  vis.slice(0, diaMostrar).forEach(v => {
+    if (v.data !== dataAtual) { dataAtual = v.data;   // cabeçalho de cada dia
+      L0.appendChild(el(`<div style="margin:16px 0 4px;font-weight:700;color:#1f3864">📅 ${esc(v.data)}${v.data === dia ? ' (hoje)' : ''} · ${vis.filter(x => x.data === v.data).length} visita(s)</div>`)); }
+    const st = v.aband === 'Sim' ? 'Abandonado' : (v.status === 'Concluído' ? ACEITOU : v.status);
+    const b = el(`<button class="item"><span class="pill ${pend.has(v.id) ? 'pend' : 'ok'}">${pend.has(v.id) ? 'aguardando envio' : 'enviada'}</span> <b>${esc(v.codigo)}</b> · CT ${esc(v.ct)}${v.tentativa ? ' · ' + esc(v.tentativa) : ''}<br>
+      <small>${esc(v.data)}${v.hora ? ' ' + esc(v.hora) : ''} · ${esc(st)}${v.titular ? ' · ' + esc(v.titular) : ''}</small></button>`);
+    b.onclick = () => opcoesVisita(v, st, pend.has(v.id)); L0.appendChild(b);
+  });
+  if (vis.length > diaMostrar) { const mais = el(`<button class="btn sec">Mostrar mais (${vis.length - diaMostrar})</button>`);
+    mais.onclick = () => { diaMostrar += 100; telaDia(); }; L0.appendChild(mais); }
+  if (rel.length) { L0.appendChild(el('<h2 style="font-size:17px;margin-top:18px">Relatos de modificação</h2>'));
+    rel.forEach(x => L0.appendChild(el(`<div class="item"><span class="pill ${pend.has(x.id) ? 'pend' : 'ok'}">${pend.has(x.id) ? 'aguardando envio' : 'enviado'}</span> <b>${esc(x.codigo)}</b> · CT ${esc(x.ct)} · ${esc(x.data)} ${esc(x.hora)}<br><small>${esc(x.texto)}</small></div>`))); }
+}
+function opcoesVisita(v, st, pendente) {
+  $('#tela').innerHTML = `<h2>${esc(v.codigo)} · CT ${esc(v.ct)}</h2>
+    <div class="cartao">${v.tentativa ? esc(v.tentativa) + ' visita · ' : ''}${esc(st)}${v.hora ? ' · ' + esc(v.hora) : ''}${v.titular ? '<br>' + esc(v.titular) : ''}<br>
+      <span class="pill ${pendente ? 'pend' : 'ok'}">${pendente ? 'aguardando envio' : 'enviada'}</span></div>
+    <p class="dica">Visita salva não é mais editada no celular. Se algo mudou ou ficou errado, relate aqui que o escritório corrige.</p>
+    <button class="btn" id="rel">✏️ Relatar modificação nesta visita</button><button class="btn sec" id="volta">Voltar</button>`;
+  $('#rel').onclick = () => relatar({codigo: v.codigo, ct: v.ct, ref: v.id, titulo: 'Relatar modificação nesta visita'});
+  $('#volta').onclick = () => telaDia();
+}
+
 async function telaInicio() {
+  menu('mapa');
   const fila = await DB.filaTodos();
   $('#hdr').textContent = `${nomeColab(S.tecnico)} · ${fila.length} p/ enviar`;
-  $('#tela').innerHTML = `<div id="mapa"></div>
+  $('#tela').innerHTML = `${botaoInstalar()}<div id="mapa"></div>
     <div id="perto" class="lista"></div>
     <button class="btn sec" id="sinc">Enviar visitas salvas (${fila.length}) e atualizar acessos</button>
     <p class="dica">Acessos atualizados em ${S.dados ? new Date(S.dados.baixado_em).toLocaleString('pt-BR') : '—'} · app ${VERSAO_APP}</p>
@@ -230,7 +342,8 @@ async function sincronizar(manual = true) {   // envia a fila (só apaga do celu
     for (let fila = await DB.filaTodos(); fila.some(v => !feitos.has(v.id_envio)) && !erro; fila = await DB.filaTodos()) {
       for (const v of fila.filter(v => !feitos.has(v.id_envio))) {
         feitos.add(v.id_envio);
-        try { const r = await api({acao: 'enviar', token: v.token || S.token, visita: v.visita, socio: v.socio, arquivos: v.arquivos});   // sai no nome de QUEM FEZ
+        try { const r = await api(v.tipo === 'relato' ? {acao: 'relatar', token: v.token || S.token, relato: v.relato}
+                                    : {acao: 'enviar', token: v.token || S.token, visita: v.visita, socio: v.socio, arquivos: v.arquivos});   // sai no nome de QUEM FEZ
           if (r.ok) { await DB.filaTira(v.id_envio); ok++; if (r.avisos && r.avisos.length) aviso(r.avisos.join('\n'), 'erro'); }
           else { erro = r.erro; if (r.ocupado) break; } }
         catch (e) { erro = 'sem internet / sinal fraco'; break; }
@@ -276,7 +389,6 @@ function PASSOS() {                    // lista de telas conforme as respostas (
   const r = S.v.r, st = r.status;
   const p = ['ct'];
   if (S.v.dist > JUST_DIST_M) p.push('just_dist');
-  if (r.ct_encerrado) p.push('confirma_encerrado');
   p.push(...Object.keys(COL)); if (r.acesso_e === 'Tem alternativa existente') p.push('alternativa');
   p.push('status');
   if (st === 'Ausente' || st === 'Recusa') { if (st === 'Recusa') p.push('quem_recusou'); p.push('aviso'); if (r.aviso === 'Sim') p.push('foto_aviso'); if (st === 'Ausente') p.push('vizinho'); }
@@ -292,6 +404,7 @@ function PASSOS() {                    // lista de telas conforme as respostas (
 }
 
 function moldura(titulo, corpo, {dica = '', valido = () => true} = {}) {
+  esconderMenu();                      // durante a visita o menu de baixo some
   const ps = PASSOS(), i = S.v.passo;
   $('#hdr').textContent = `${S.v.acesso.codigo}${S.v.r.ct ? ' · CT ' + S.v.r.ct : ''}`;
   $('#tela').innerHTML = `<div class="prog"><div style="width:${Math.round(100 * (i + 1) / ps.length)}%"></div></div>
@@ -739,8 +852,20 @@ async function telaCT() {
   const d = el('<div class="lista"></div>');
   // no app o campo vê "Aceitou a entrevista" no lugar de "Concluído" (inclusive no histórico do CT)
   cts.forEach(c => { const b = el(`<button class="${S.v.r.ct_name === c.name ? 'sel' : ''}">${esc(String(c.label).replace(/Concluído/g, 'Aceitou a entrevista'))}</button>`);
-    b.onclick = () => { S.v.r.ct_name = c.name; S.v.r.ct = String(c.ct).padStart(2, '0'); S.v.r.tentativa = String(c.proxima);
-      S.v.r.novo = String(c.name).endsWith('__NOVO'); S.v.r.ct_encerrado = String(c.encerrado) === '1';
+    b.onclick = () => {
+      if (String(c.encerrado) === '1') {   // CT encerrado: o campo não faz visita nova nem edita — só relata modificação
+        [...d.children].forEach(x => x.classList.remove('sel')); delete S.v.r.ct;
+        const caixa = el(`<div class="aviso" style="margin:8px 0">Esse CT foi encerrado${c.desfecho ? ' (' + esc(String(c.desfecho).replace('Concluído', ACEITOU)) + ')' : ''}. Deseja relatar alguma modificação?
+          <div class="barra" style="position:static"><button class="btn sec" id="rel_n">Não</button><button class="btn" id="rel_s">Sim</button></div></div>`);
+        const velho = document.querySelector('#caixa_enc'); if (velho) velho.remove(); caixa.id = 'caixa_enc'; b.after(caixa);
+        caixa.querySelector('#rel_n').onclick = () => caixa.remove();                       // "Não": fica na tela
+        caixa.querySelector('#rel_s').onclick = () => { const a = S.v.acesso; S.v = null; descartarRascunho();
+          relatar({codigo: a.codigo, ct: dois(+so(c.ct)), titulo: `Relatar modificação — CT ${dois(+so(c.ct))} (encerrado)`}); };
+        return;
+      }
+      S.v.r.ct_name = c.name; S.v.r.ct = String(c.ct).padStart(2, '0'); S.v.r.tentativa = String(c.proxima);
+      S.v.r.novo = String(c.name).endsWith('__NOVO'); S.v.r.ct_encerrado = false;
+      const velho = document.querySelector('#caixa_enc'); if (velho) velho.remove();
       [...d.children].forEach(x => x.classList.remove('sel')); b.classList.add('sel'); }; d.appendChild(b); });
   const avisoDist = S.v.dist > AVISO_DIST_M ? `<div class="aviso">Você está a ${S.v.dist} m deste acesso. Confira se é o acesso certo.</div>` : '';
   moldura('Qual imóvel (CT)?', d, {dica: avisoDist + 'O número do CT e da visita são automáticos.', valido: () => S.v.r.ct ? true : 'Escolha o CT.'});
@@ -833,6 +958,11 @@ async function salvar() {
     'Observações (socioeconômica)': [v3('socio_obs'), v3('assin_socio_motivo') && `(declarante não assinou: ${v3('assin_socio_motivo')})`].filter(Boolean).join(' '),
     motivo_nao_respondeu: r.socio_aceitou !== 'Sim' ? v3('socio_obs') : '',
     'Local e data': visita['Local e data']} : null;
+  // sem entrevista de pessoa física (ausente, recusa, abandonado ou pessoa jurídica) → socio registrada sozinha como "Não se aplica"
+  const naoSeAplica = st !== ACEITOU ? `Não se aplica — visita ${st === 'Abandonado / ruína' ? 'Abandonado' : st}` : (PJ(r) ? 'Não se aplica (pessoa jurídica)' : '');
+  const socioFinal = socio || (naoSeAplica ? {'Código': a.codigo, 'CT Nº': r.ct, 'Data da visita': visita['Data da visita'],
+    'Aceitou responder a ficha socioeconômica?': 'Não se aplica', motivo_nao_respondeu: naoSeAplica, 'Observações (socioeconômica)': naoSeAplica,
+    'Local e data': visita['Local e data']} : null);
   // arquivos: só de telas que valem (foto do aviso / documentos de tela abandonada não sobem)
   const telas = new Set(PASSOS());
   const fotoVale = f => f.tipo === 'foto_acesso' || (f.tipo === 'foto_aviso' && telas.has('foto_aviso')) || (f.tipo === 'docs' && telas.has('docs'));
@@ -841,11 +971,12 @@ async function salvar() {
   const svg = s => btoa(unescape(encodeURIComponent(s)));
   if (r.assinatura_svg) arquivos.push({tipo: 'assinatura', mime: 'image/svg+xml', base64: svg(r.assinatura_svg)});
   if (socio && ativa('assin_socio') && r.assin_socio) arquivos.push({tipo: 'assinatura_socio', mime: 'image/svg+xml', base64: svg(r.assin_socio)});
-  await DB.filaPor({id_envio: S.v.id, visita, socio, arquivos, token: S.token, tecnico: S.tecnico, salvo_em: new Date().toISOString()});
+  await DB.filaPor({id_envio: S.v.id, visita, socio: socioFinal, arquivos, token: S.token, tecnico: S.tecnico, salvo_em: new Date().toISOString()});
   await descartarRascunho();           // já está na fila de envio: o rascunho não é mais necessário
   {                                    // registro leve de TODA visita deste celular → próxima visita / CT encerrado certos, mesmo sem internet
     const m = (await DB.get('minhas')) || [];
-    m.push({id: S.v.id, codigo: a.codigo, ct: r.ct, data: visita['Data da visita'], status: visita['Status da aplicação da ficha'],
+    m.push({id: S.v.id, codigo: a.codigo, ct: r.ct, data: visita['Data da visita'], hora: visita['Hora de início da visita'], tentativa: visita['Tentativa nº'], tecnico: S.tecnico,
+            status: visita['Status da aplicação da ficha'],
             aband: visita['O imóvel está abandonado/ruína?'], titular: visita['Nome completo'] || visita['Razão social'] || ''});
     await DB.set('minhas', m.slice(-1000));
   }

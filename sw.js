@@ -1,6 +1,6 @@
 // Service worker: guarda o app, a biblioteca do mapa e os pedaços de mapa já vistos → funciona offline.
-const CACHE = 'viasul-campo-2026-10-22.12';
-const BASE = ['index.html', 'manifest.json', 'icone.svg',
+const CACHE = 'viasul-campo-2026-10-22.18';
+const BASE = ['index.html', 'manifest.json', 'icone.svg', 'icone-192.png', 'icone-512.png', 'icone-maskable.png',
   'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css', 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(BASE.map(u => new Request(u, {cache: 'reload'}))))); self.skipWaiting(); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE && !k.startsWith('tiles')).map(k => caches.delete(k))))); self.clients.claim(); });
