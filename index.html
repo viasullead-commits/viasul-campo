@@ -42,7 +42,7 @@ textarea{min-height:140px}
 <script>
 'use strict';
 const SERVIDOR = 'https://script.google.com/macros/s/AKfycbz-lzDXOHPw396P5CxXM3u2Uuu_tyFspxY5d39bw-EZ7xwku3MAgVlIVwqFO8ubZh-0QA/exec';
-const VERSAO_APP = '2026-10-22.1';
+const VERSAO_APP = '2026-10-22.4';
 const RAIO_LISTA_M = 250;           // acessos mais perto que isso aparecem na lista
 const AVISO_DIST_M = 300, JUST_DIST_M = 500;
 
@@ -69,6 +69,7 @@ function distM(a, b, c, d) { const R = 6371000, r = x => x * Math.PI / 180; cons
   const h = Math.sin(dl / 2) ** 2 + Math.cos(r(a)) * Math.cos(r(c)) * Math.sin(dg / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(h)); }
 const dois = n => String(n).padStart(2, '0');
 const hoje = (d = new Date()) => `${d.getFullYear()}-${dois(d.getMonth() + 1)}-${dois(d.getDate())}`;   // data/hora do CELULAR (não UTC)
+const dataBR = iso => /^\d{4}-\d{2}-\d{2}$/.test(iso || '') ? iso.split('-').reverse().join('/') : (iso || '');   // planilha em dd/mm/aaaa
 const hora = (d = new Date()) => `${dois(d.getHours())}:${dois(d.getMinutes())}`;
 const uid = () => 'v' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 async function pega(url, opts = {}, ms = 90000) {   // fetch com tempo-limite (sinal fraco não pode travar o app)
@@ -142,6 +143,7 @@ async function telaInicio() {
     const perto = S.dados.acessos.map(a => ({a, d: distM(S.gps.lat, S.gps.lon, +a.lat, +a.lon)})).sort((x, y) => x.d - y.d);
     const lista = perto.filter(x => x.d <= RAIO_LISTA_M).slice(0, 8);
     const mais = perto[0];
+    if (!mais) { $('#perto').innerHTML = '<div class="aviso">Nenhum acesso no celular — toque em "Enviar visitas salvas e atualizar acessos" com internet.</div>'; return; }
     $('#perto').innerHTML = `<div class="dica">GPS ±${S.gps.prec} m · acesso mais perto: <b>${esc(mais.a.codigo)}</b> (${Math.round(mais.d)} m)</div>`;
     (lista.length ? lista : [mais]).forEach(x => { const b = el(`<button>${esc(x.a.codigo)} <span class="tag">${Math.round(x.d)} m</span><br><small>${esc(x.a.municipio)} · km ${esc(x.a.km)} ${esc(x.a.sentido)}</small></button>`);
       b.onclick = () => escolherAcesso(x.a, x.d); $('#perto').appendChild(b); });
@@ -180,8 +182,9 @@ const OP = {
   construcao: ['Construção em Alvenaria', 'Construção em Madeira', 'Construção Mista', 'Sem construção'], situacao: ['Regular', 'Irregular'],
   acesso_e: ['Único acesso ao imóvel', 'Tem alternativa existente'], tipo_acesso: ['Direto à rodovia', 'Servidão/acesso compartilhado'],
   cond_acesso: ['Pavimentado', 'Revestimento primário', 'Sem revestimento'],
-  status: ['Ausente', 'Recusa', 'Abandonado / ruína', 'Concluído'],
+  status: ['Ausente', 'Recusa', 'Abandonado / ruína', 'Aceitou a entrevista'],   // "Aceitou" é gravado como Concluído
 };
+const ACEITOU = OP.status[3];
 const COL = {cond_util: 'Condição de utilização', faixa: 'Faixa ocupada', zona: 'Zona', construcao: 'Tipo da construção', situacao: 'Situação',
   acesso_e: 'O acesso é', tipo_acesso: 'Tipo de acesso', cond_acesso: 'Condição do acesso'};
 const slug = s => String(s).replace(/[^0-9A-Za-z]+/g, '_').replace(/^_|_$/g, '');   // igual ao slug() do gerar_formulario.py
@@ -201,10 +204,10 @@ function PASSOS() {                    // lista de telas conforme as respostas (
   p.push(...Object.keys(COL)); if (r.acesso_e === 'Tem alternativa existente') p.push('alternativa');
   p.push('status');
   if (st === 'Ausente' || st === 'Recusa') { if (st === 'Recusa') p.push('quem_recusou'); p.push('aviso'); if (r.aviso === 'Sim') p.push('foto_aviso'); if (st === 'Ausente') p.push('vizinho'); }
-  p.push('foto_evidencia', 'foto_acesso', 'fotos_comp');
-  if (st === 'Concluído') p.push('fase3');
+  p.push('fotos_acesso');
+  if (st === ACEITOU) p.push(...Q.filter(q => !q.quando || q.quando(r)).map(q => q.id));
   p.push('obs', 'pendente'); if (r.pendente === 'Sim') p.push('pendente_o_que');
-  p.push('assinatura'); if (st === 'Concluído' && !r.assinatura_svg) p.push('sem_assinatura');
+  p.push('assinatura'); if (r.assinatura_svg_nao) p.push('sem_assinatura');
   p.push('revisao');
   return p;
 }
@@ -227,44 +230,244 @@ function escolha(campo, titulo, opcoes, {dica, obrig = true} = {}) {
   moldura(titulo, d, {dica, valido: () => (!obrig || S.v.r[campo]) ? true : 'Escolha uma opção.'});
 }
 
-function texto(campo, titulo, {dica, min = 0, multilinha = false, obrig = true} = {}) {
-  moldura(titulo, multilinha ? `<textarea id="in">${esc(S.v.r[campo] || '')}</textarea>` : `<input id="in" type="text" value="${esc(S.v.r[campo] || '')}">`,
-    {dica, valido: () => { const v = $('#in').value.trim(); S.v.r[campo] = v;
-      if (obrig && !v) return 'Campo obrigatório.'; if (v.length < min) return `Escreva pelo menos ${min} caracteres.`; return true; }});
+// toda tela exige resposta; quando a informação pode não existir, o técnico toca no botão (ex.: "Não informado")
+function texto(campo, titulo, {dica, min = 2, multilinha = false, naoInf} = {}) {
+  const atual = S.v.r[campo] === naoInf ? '' : (S.v.r[campo] || '');
+  moldura(titulo, (multilinha ? `<textarea id="in">${esc(atual)}</textarea>` : `<input id="in" type="text" value="${esc(atual)}">`) +
+    (naoInf ? `<button class="btn sec" id="naoinf">${esc(naoInf)}</button>` : ''),
+    {dica, valido: () => { const v = $('#in').value.trim();
+      if (!v) return naoInf ? `Escreva ou toque em "${naoInf}".` : 'Campo obrigatório.';
+      if (v.length < min) return `Escreva pelo menos ${min} caracteres.`; S.v.r[campo] = v; return true; }});
+  if (naoInf) $('#naoinf').onclick = () => { S.v.r[campo] = naoInf; S.v.passo++; passo(); };
 }
 
-function comprimir(arq) {             // foto → JPEG até 1600 px, com data/hora e GPS do momento
+// carimbo igual ao da câmera do campo: canto inferior direito, 2 linhas, branco com contorno escuro
+//   "10 de set. de 2026 11:42:32"
+//   28°19'24,936"S 52°43'31,044"W
+const MESES = ['jan.', 'fev.', 'mar.', 'abr.', 'mai.', 'jun.', 'jul.', 'ago.', 'set.', 'out.', 'nov.', 'dez.'];
+function gms(v, pos, neg) { const a = Math.abs(v), g = Math.floor(a), m = Math.floor((a - g) * 60), s = ((a - g) * 60 - m) * 60;
+  return `${g}°${m}'${s.toFixed(3).replace('.', ',')}"${v < 0 ? neg : pos}`; }
+function carimbar(c, quando, gps) {
+  const g = c.getContext('2d'), fs = Math.round(Math.min(c.height, c.width) * 0.042), mg = Math.round(fs * 0.2);   // tamanho medido na foto do campo
+  const l1 = `${quando.getDate()} de ${MESES[quando.getMonth()]} de ${quando.getFullYear()} ${hora(quando)}:${dois(quando.getSeconds())}`;
+  const l2 = `${gms(gps.lat, 'N', 'S')} ${gms(gps.lon, 'E', 'W')}`;
+  g.font = `${fs}px Roboto, "Segoe UI", Arial, sans-serif`; g.textAlign = 'right'; g.textBaseline = 'bottom';
+  g.lineJoin = 'round'; g.lineWidth = Math.max(2, fs / 9); g.strokeStyle = 'rgba(0,0,0,.75)'; g.fillStyle = '#fff';
+  [[l2, c.height - mg], [l1, c.height - mg - fs * 1.1]].forEach(([t, y]) => { g.strokeText(t, c.width - mg, y); g.fillText(t, c.width - mg, y); });
+}
+function comprimir(arq) {             // foto → JPEG até 1600 px, carimbada com data/hora e coordenadas do momento
+  const quando = new Date(), gps = {...S.gps};
   return new Promise(ok => { const img = new Image(); img.onload = () => { const k = Math.min(1, 1600 / Math.max(img.width, img.height));
     const c = document.createElement('canvas'); c.width = img.width * k; c.height = img.height * k; c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-    ok({base64: c.toDataURL('image/jpeg', .82).split(',')[1], mime: 'image/jpeg', tirada_em: new Date().toISOString(),
-        gps_lat: S.gps ? S.gps.lat : '', gps_lon: S.gps ? S.gps.lon : ''}); }; img.src = URL.createObjectURL(arq); });
+    carimbar(c, quando, gps);
+    ok({base64: c.toDataURL('image/jpeg', .85).split(',')[1], mime: 'image/jpeg', tirada_em: quando.toISOString(),
+        gps_lat: gps.lat, gps_lon: gps.lon, gps_precisao_m: gps.prec}); }; img.src = URL.createObjectURL(arq); });
 }
 
-function foto(tipo, titulo, {obrig = true, varias = false, dica} = {}) {
+function foto(tipo, titulo, {min = 1, dica} = {}) {   // min = 0 → pode seguir sem foto, mas tocando em "Nenhuma foto"
   const minhas = () => S.v.fotos.filter(f => f.tipo === tipo);
   const d = el(`<div><input id="cam" type="file" accept="image/*" capture="environment" style="display:none">
-    <button class="btn" id="tirar">📷 Tirar foto</button><div class="fotos" id="prev"></div></div>`);
-  moldura(titulo, d, {dica, valido: () => (!obrig || minhas().length) ? true : 'Foto obrigatória.'});
-  const mostra = () => { $('#prev').innerHTML = ''; minhas().forEach(f => $('#prev').appendChild(el(`<img src="data:image/jpeg;base64,${f.base64}">`))); };
-  $('#tirar').onclick = () => $('#cam').click();
+    <button class="btn" id="tirar">📷 Tirar foto</button>${min ? '' : '<button class="btn sec" id="semfoto">Nenhuma foto</button>'}
+    <div class="dica" id="cont"></div><div class="fotos" id="prev"></div></div>`);
+  moldura(titulo, d, {dica, valido: () => minhas().length >= Math.max(min, 1) ? true :
+    (min ? `Tire pelo menos ${min} foto(s) — faltam ${min - minhas().length}.` : 'Tire a foto ou toque em "Nenhuma foto".')});
+  if (!min) $('#semfoto').onclick = () => { S.v.fotos = S.v.fotos.filter(f => f.tipo !== tipo); S.v.passo++; passo(); };
+  const mostra = () => { $('#prev').innerHTML = ''; $('#cont').textContent = `${minhas().length} foto(s)${min ? ` de no mínimo ${min}` : ''} · toque numa foto para apagar`;
+    minhas().forEach(f => { const im = el(`<img src="data:image/jpeg;base64,${f.base64}">`);
+      im.onclick = () => { if (confirm('Apagar esta foto?')) { S.v.fotos = S.v.fotos.filter(x => x !== f); mostra(); } }; $('#prev').appendChild(im); }); };
+  $('#tirar').onclick = () => {        // sem coordenada não tira: a foto precisa sair carimbada
+    if (!S.gps) { $('#err').textContent = 'Aguarde o GPS (ative a localização) — a foto precisa sair com as coordenadas.'; return; }
+    $('#err').textContent = ''; $('#cam').click(); };
   $('#cam').onchange = async e => { const f = e.target.files[0]; if (!f) return; const c = await comprimir(f);
-    if (!varias) S.v.fotos = S.v.fotos.filter(x => x.tipo !== tipo); S.v.fotos.push({tipo, ...c}); mostra(); e.target.value = ''; };
+    S.v.fotos.push({tipo, ...c}); mostra(); e.target.value = ''; };
   mostra();
 }
 
-function assinatura() {               // traço vetorial → SVG (igual ao Geonexus)
-  const d = el(`<div><canvas id="assin"></canvas><button class="btn sec" id="limpa">Limpar</button></div>`);
-  moldura('Assinatura do entrevistado / declarante', d, {dica: 'Opcional — peça sempre. O entrevistado assina com o dedo.', valido: () => {
-    S.v.r.assinatura_svg = tracos.length ? `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${cv.width} ${cv.height}"><g fill="none" stroke="#0e2841" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">${tracos.map(t => `<path d="M${t.map(p => p.join(' ')).join(' L')}"/>`).join('')}</g></svg>` : '';
-    return true; }});
+function assinatura(campo = 'assinatura_svg', titulo = 'Assinatura do entrevistado / declarante') {   // traço vetorial → SVG (igual ao Geonexus)
+  const r = S.v.r;
+  const d = el(`<div><canvas id="assin"></canvas><button class="btn sec" id="limpa">Limpar</button><button class="btn sec" id="naoassina">Não vai assinar</button></div>`);
+  moldura(titulo, d, {dica: 'Peça sempre: assina com o dedo.' + (r[campo] ? ' (já assinado — assine de novo só se quiser trocar)' : ''), valido: () => {
+    if (tracos.length) r[campo] = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${cv.width} ${cv.height}"><g fill="none" stroke="#0e2841" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">${tracos.map(t => `<path d="M${t.map(p => p.join(' ')).join(' L')}"/>`).join('')}</g></svg>`;
+    if (!r[campo]) return 'Peça a assinatura ou toque em "Não vai assinar".';
+    r[campo + '_nao'] = false; return true; }});
+  $('#naoassina').onclick = () => { r[campo] = ''; r[campo + '_nao'] = true; S.v.passo++; passo(); };   // próxima tela pede o motivo
   const cv = $('#assin'); cv.width = cv.offsetWidth; cv.height = cv.offsetHeight; const g = cv.getContext('2d'); g.lineWidth = 2.2; g.lineCap = 'round';
   let tracos = [], atual = null;
   const pt = e => { const r = cv.getBoundingClientRect(); return [Math.round(e.clientX - r.left), Math.round(e.clientY - r.top)]; };
   cv.onpointerdown = e => { atual = [pt(e)]; tracos.push(atual); };
   cv.onpointermove = e => { if (!atual) return; const p = pt(e), q = atual[atual.length - 1]; g.beginPath(); g.moveTo(...q); g.lineTo(...p); g.stroke(); atual.push(p); };
   cv.onpointerup = cv.onpointerleave = () => { atual = null; };
-  $('#limpa').onclick = () => { tracos = []; g.clearRect(0, 0, cv.width, cv.height); };
+  $('#limpa').onclick = () => { tracos = []; r[campo] = ''; g.clearRect(0, 0, cv.width, cv.height); };
 }
+
+// ---------------- parte 3: ficha completa ("Aceitou a entrevista") — perguntas declaradas; PASSOS() só põe as que valem
+const so = s => String(s ?? '').replace(/\D/g, '');
+function cpfOk(v) { const c = so(v); if (c.length !== 11 || /^(\d)\1+$/.test(c)) return false;
+  for (const n of [9, 10]) { let s = 0; for (let i = 0; i < n; i++) s += +c[i] * (n + 1 - i); if ((s * 10 % 11) % 10 !== +c[n]) return false; } return true; }
+function cnpjOk(v) { const c = so(v); if (c.length !== 14 || /^(\d)\1+$/.test(c)) return false;
+  const dv = n => { const p = (n === 12 ? [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2] : [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]); const s = p.reduce((a, x, i) => a + x * +c[i], 0) % 11; return s < 2 ? 0 : 11 - s; };
+  return dv(12) === +c[12] && dv(13) === +c[13]; }
+function idade(iso) { const d = new Date(iso + 'T12:00'), h = new Date(); let a = h.getFullYear() - d.getFullYear();
+  if (h < new Date(h.getFullYear(), d.getMonth(), d.getDate())) a--; return a; }
+const num = v => { let s = String(v ?? '').trim(); if (!s) return NaN; if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.'); return Number(s); };
+const brl = n => n.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const SM2 = 3242;                      // 2 salários mínimos 2026
+function perCapita(r) { const t = num(r.total_pessoas), v = num(r.renda_total);
+  return (r.socio_aceitou === 'Sim' && r.renda_inf === 'Informou o valor' && t > 0 && !isNaN(v)) ? Math.round(v / t * 100) / 100 : null; }
+const faixaPC = r => { const p = perCapita(r); return p == null ? '' : (p <= SM2 ? 'Até 2 salários mínimos' : 'Acima de 2 salários mínimos'); };
+const SN = ['Sim', 'Não'], SN_INF = ['Sim', 'Não', 'Não soube informar', 'Recusou a informar'], NAO_INF = 'Não informado';
+const EST_CIVIL = ['Solteiro', 'Casado', 'União Estável', 'Divorciado', 'Viúvo', NAO_INF];
+const casado = e => e === 'Casado' || e === 'União Estável';
+const PF = r => r.pf_pj === 'Física', PJ = r => r.pf_pj === 'Jurídica', SO = r => PF(r) && r.socio_aceitou === 'Sim';
+const ANO = new Date().getFullYear();
+function pessoa(p, rot, quando, nomeObrig = true) {   // nome → documentos (CPF, RG, nascimento) ou motivo → telefone
+  const temNome = r => quando(r) && r[p + '_nome'] !== NAO_INF, doc = r => temNome(r) && r[p + '_doc'] === 'Sim';
+  return [
+    {id: p + '_nome', tipo: 'nome', titulo: `Nome completo — ${rot}`, quando, naoInf: nomeObrig ? null : NAO_INF},
+    {id: p + '_doc', tipo: 'escolha', titulo: `Informou os documentos? (${rot})`, op: ['Sim', 'Não quis / não tinha'], quando: temNome},
+    {id: p + '_cpf', tipo: 'cpf', titulo: `CPF — ${rot}`, quando: doc},
+    {id: p + '_rg', tipo: 'rg', titulo: `RG nº — ${rot}`, quando: doc, naoInf: NAO_INF},
+    {id: p + '_nasc', tipo: 'nasc', titulo: `Data de nascimento — ${rot}`, quando: doc},
+    {id: p + '_motivo', tipo: 'texto', titulo: `Por que não informou os documentos? (${rot})`, quando: r => temNome(r) && r[p + '_doc'] === 'Não quis / não tinha'},
+    {id: p + '_tel', tipo: 'tel', titulo: `Telefone (WhatsApp) — ${rot}`, quando: temNome, naoInf: NAO_INF},
+  ];
+}
+const Q = [
+  {id: 'pf_pj', tipo: 'escolha', titulo: 'É pessoa física ou jurídica?', op: ['Física', 'Jurídica']},
+  {id: 'relacao', tipo: 'escolha', titulo: 'Relação com o imóvel', op: ['Proprietário', 'Posseiro', 'Locatário', 'Arrendatário', 'Cessionário / uso cedido', 'Caseiro / funcionário']},
+  {id: 'matricula', tipo: 'escolha', titulo: 'Possui matrícula do imóvel ou documento equivalente (escritura, contrato, recibo)?', op: ['Sim', 'Não', 'Não soube informar']},
+  ...pessoa('tit', 'titular', PF),
+  {id: 'estado_civil', tipo: 'escolha', titulo: 'Estado civil do titular', op: EST_CIVIL, quando: PF},
+  ...pessoa('conj', 'cônjuge/companheiro(a)', r => PF(r) && casado(r.estado_civil), false),
+  {id: 'razao', tipo: 'texto', titulo: 'Razão social', quando: PJ, min: 3},
+  {id: 'cnpj', tipo: 'cnpj', titulo: 'CNPJ', quando: PJ},
+  {id: 'regime', tipo: 'escolha', titulo: 'Regime tributário (declarado)', quando: PJ,
+   op: ['MEI (Microempreendedor Individual)', 'ME (Microempresa)', 'EPP (Empresa de Pequeno Porte)', 'Outro', NAO_INF]},
+  {id: 'simples', tipo: 'escolha', titulo: 'Optante do Simples Nacional?', op: ['Sim', 'Não', NAO_INF], quando: PJ},
+  ...pessoa('rep', 'representante legal', PJ),
+  {id: 'rep_estado_civil', tipo: 'escolha', titulo: 'Estado civil do representante legal', op: EST_CIVIL, quando: PJ},
+  ...pessoa('repc', 'cônjuge do representante', r => PJ(r) && casado(r.rep_estado_civil), false),
+  {id: 'dap', tipo: 'escolha', titulo: 'Possui declaração de aptidão ao PRONAF (DAP/CAF)?', op: SN_INF, quando: PF},
+  {id: 'cadunico', tipo: 'escolha', titulo: 'Está inscrito no Cadastro Único (CadÚnico) ou equivalente?', op: SN_INF, quando: PF},
+  {id: 'docs', tipo: 'foto', titulo: 'Fotos dos DOCUMENTOS (RG, CNH, CPF, matrícula, escritura, conta…)',
+   min: r => ['tit', 'rep'].some(p => r[p + '_doc'] === 'Sim') ? 1 : 0,
+   dica: r => ['tit', 'rep'].some(p => r[p + '_doc'] === 'Sim') ? 'Informou documentos → fotografe pelo menos 1.' : 'Sem documentos informados: pode seguir sem foto.'},
+  // ---- socioeconômica (só pessoa física)
+  {id: 'socio_aceitou', tipo: 'escolha', titulo: 'A pessoa ACEITOU responder a ficha SOCIOECONÔMICA?', op: ['Sim', 'Não', 'Não se aplica (não reside no imóvel)'], quando: PF},
+  {id: 'socio_motivo', tipo: 'texto', titulo: 'Por que não respondeu a socioeconômica?', quando: r => PF(r) && r.socio_aceitou === 'Não'},
+  {id: 'total_pessoas', tipo: 'int', titulo: '01.01 Quantas pessoas residem no imóvel?', quando: SO, faixa: [1, 30]},
+  {id: 'criancas', tipo: 'int', titulo: 'a) Crianças (0 a 17 anos)', quando: SO, faixa: [0, 30],
+   valida: (v, r) => v <= num(r.total_pessoas) || 'Passou do total de moradores.'},
+  {id: 'adultos', tipo: 'int', titulo: 'b) Adultos (18 a 59 anos)', quando: SO, faixa: [0, 30],
+   valida: (v, r) => v + num(r.criancas) <= num(r.total_pessoas) || 'Crianças + adultos passou do total de moradores.'},
+  {id: 'idosos', tipo: 'int', titulo: 'c) Idosos (60 anos ou mais)', quando: SO, faixa: [0, 30],
+   valida: (v, r) => v + num(r.criancas) + num(r.adultos) === num(r.total_pessoas) ||
+     `Crianças + adultos + idosos tem que dar ${r.total_pessoas} (o total de moradores). Idoso NÃO entra em adultos.`},
+  {id: 'renda_inf', tipo: 'escolha', titulo: '01.02 Renda familiar bruta TOTAL mensal (somar todas as rendas)', op: ['Informou o valor', 'Não quis informar', 'Não soube informar'], quando: SO},
+  {id: 'renda_total', tipo: 'dinheiro', titulo: 'Valor da renda TOTAL mensal da família (R$)', quando: r => SO(r) && r.renda_inf === 'Informou o valor',
+   faixa: [0, 100000], dica: 'Valor MENSAL (não anual), somando todas as rendas da casa.'},
+  {id: 'despesas50', tipo: 'escolha', titulo: '01.04 As despesas essenciais (alimentação, moradia, água, energia, saúde e transporte) comprometem mais de 50% da renda familiar?',
+   op: ['Sim', 'Não', 'Não sabe informar'], quando: SO, dica: r => perCapita(r) == null ? '' : `Renda por pessoa: R$ ${brl(perCapita(r))} → ${faixaPC(r)}.`},
+  {id: 'saude', tipo: 'escolha', titulo: '01.05 Realiza gastos mensais com tratamento de saúde ou medicamentos de uso contínuo?', op: SN, quando: SO},
+  {id: 'saude_valor', tipo: 'dinheiro', titulo: 'Valor médio mensal com saúde (R$)', quando: r => SO(r) && r.saude === 'Sim', faixa: [0, 50000], naoInf: 'Não soube informar'},
+  {id: 'pensao', tipo: 'escolha', titulo: '01.06 Paga pensão alimentícia a dependentes?', op: SN, quando: SO},
+  {id: 'pensao_valor', tipo: 'dinheiro', titulo: 'Valor médio mensal da pensão (R$)', quando: r => SO(r) && r.pensao === 'Sim', faixa: [0.01, 50000], naoInf: 'Não soube informar'},
+  {id: 'veiculo', tipo: 'escolha', titulo: '01.07 A família possui veículo automotor (carro, moto, caminhão)?', op: SN, quando: SO},
+  {id: 'veic_tipo', tipo: 'multi', titulo: 'Qual o tipo?', quando: r => SO(r) && r.veiculo === 'Sim',
+   op: ['Carro', 'Moto', 'Caminhonete', 'Caminhão', 'Trator / máquina agrícola', 'Van / ônibus', 'Outro']},
+  {id: 'veic_ano', tipo: 'int', titulo: 'Ano aproximado do veículo principal', quando: r => SO(r) && r.veiculo === 'Sim', faixa: [1950, ANO + 1],
+   msgFaixa: `Ano entre 1950 e ${ANO + 1} (não use 0).`},
+  {id: 'veic_trabalho', tipo: 'escolha', titulo: 'É utilizado como instrumento de trabalho?', op: SN, quando: r => SO(r) && r.veiculo === 'Sim'},
+  {id: 'beneficio', tipo: 'escolha', titulo: '01.08 Recebe Bolsa Família, BPC ou outro benefício do governo?', op: SN, quando: SO},
+  {id: 'benef_qual', tipo: 'multi', titulo: 'Qual benefício?', quando: r => SO(r) && r.beneficio === 'Sim',
+   op: ['Bolsa Família', 'BPC', 'Aposentadoria / pensão INSS', 'Auxílio-doença', 'Outro'],
+   valida: (v, r) => !(v.includes('Bolsa Família') && r.cadunico === 'Não') || 'Bolsa Família exige CadÚnico, mas foi marcado que NÃO tem CadÚnico. Volte e confira.'},
+  {id: 'reside', tipo: 'escolha', titulo: '01.09 O imóvel onde reside é', quando: SO,
+   op: ['Próprio (já quitado)', 'Próprio (financiado – ainda pagando)', 'Alugado', 'Cedido por familiares / terceiros', 'Outros']},
+  {id: 'outro_imovel', tipo: 'escolha', titulo: '01.10 A família possui outro imóvel?', op: SN, quando: SO},
+  {id: 'outro_qtd', tipo: 'int', titulo: 'Quantos outros imóveis?', quando: r => SO(r) && r.outro_imovel === 'Sim', faixa: [1, 50]},
+  {id: 'outro_onde', tipo: 'texto', titulo: 'Onde ficam?', quando: r => SO(r) && r.outro_imovel === 'Sim', naoInf: 'Não soube informar'},
+  {id: 'tempo', tipo: 'escolha', titulo: '02.01 Qual o tempo de residência no local (anos)?', op: ['0 a 1', '1 a 5', '5 a 10', '10 a 15', '15 a 20', '20 +'], quando: SO},
+  {id: 'uso', tipo: 'escolha', titulo: '02.02 O imóvel é utilizado para', quando: SO,
+   op: ['Moradia', 'Atividade comercial e/ou serviços', 'Atividade agrícola ou pecuária', 'Atividade industrial', 'Moradia e atividade econômica', 'Outros']},
+  {id: 'falta', tipo: 'escolha', titulo: '02.03 Falta água encanada, luz o dia todo ou rede de esgoto?', op: SN, quando: SO},
+  {id: 'falta_o_que', tipo: 'multi', titulo: 'O que falta?', op: ['Água encanada', 'Luz o dia todo', 'Rede de esgoto'], quando: r => SO(r) && r.falta === 'Sim'},
+  {id: 'escolaridade', tipo: 'escolha', titulo: '02.04 Nível de escolaridade do principal responsável (financeiro) pelo domicílio', quando: SO,
+   op: ['Não alfabetizado', 'Ensino fundamental incompleto', 'Ensino fundamental completo', 'Ensino médio (incompleto ou completo)', 'Ensino superior (incompleto ou completo)']},
+  {id: 'marcadores', tipo: 'multi', titulo: '02.05 A família possui algum dos seguintes marcadores sociais?', quando: SO, exclusivo: 'Nenhum dos marcadores acima',
+   op: ['Pessoa com deficiência (PcD) no domicílio', 'Pessoa com doença crônica ou grave que demande acompanhamento ou gastos',
+        'Desemprego familiar (todos os adultos sem trabalho remunerado)', 'Família monoparental', 'Condições precárias de moradia', 'Nenhum dos marcadores acima']},
+  {id: 'qtd_pcd', tipo: 'int', titulo: 'Quantas pessoas com deficiência?', quando: r => SO(r) && (r.marcadores || []).some(m => m.startsWith('Pessoa com deficiência')),
+   faixa: r => [1, num(r.total_pessoas)]},
+  {id: 'qtd_cronica', tipo: 'int', titulo: 'Quantas pessoas com doença crônica ou grave?', quando: r => SO(r) && (r.marcadores || []).some(m => m.startsWith('Pessoa com doença')),
+   faixa: r => [1, num(r.total_pessoas)]},
+  {id: 'socio_status', tipo: 'escolha', titulo: 'Status da ficha socioeconômica', op: ['Respondeu todas as perguntas', 'Respondeu parcialmente'], quando: SO},
+  {id: 'socio_obs', tipo: 'texto', titulo: '03 OBSERVAÇÕES (socioeconômica)', multilinha: true, quando: SO, naoInf: 'Sem observações'},
+  {id: 'assin_socio', tipo: 'assinatura', titulo: 'Assinatura do DECLARANTE (socioeconômica)', quando: SO},
+  {id: 'assin_socio_motivo', tipo: 'texto', titulo: 'Por que o declarante não assinou a socioeconômica?', quando: r => SO(r) && r.assin_socio_nao},
+  // renda por pessoa da FUNDIÁRIA: vem da socio; só pergunta quando a socio não deu o valor
+  {id: 'renda_pc_pergunta', tipo: 'escolha', titulo: 'Renda familiar POR PESSOA (renda total ÷ moradores; 2 salários = R$ 3.242)', quando: r => PF(r) && perCapita(r) == null,
+   op: ['Até 2 salários mínimos', 'Acima de 2 salários mínimos', 'Não soube informar', 'Recusou a informar']},
+];
+const QI = Object.fromEntries(Q.map(q => [q.id, q]));
+const ativa = id => { const q = QI[id]; return !!q && S.v.r.status === ACEITOU && (!q.quando || q.quando(S.v.r)); };
+
+function multi(q) {                    // marcar vários; "Nenhum…" não combina com os outros
+  const r = S.v.r; if (!Array.isArray(r[q.id])) r[q.id] = [];
+  const d = el('<div class="lista"></div>');
+  const desenha = () => { d.innerHTML = ''; q.op.forEach(o => { const b = el(`<button class="${r[q.id].includes(o) ? 'sel' : ''}">${r[q.id].includes(o) ? '☑' : '☐'} ${esc(o)}</button>`);
+    b.onclick = () => { let v = r[q.id];
+      v = v.includes(o) ? v.filter(x => x !== o) : (o === q.exclusivo ? [o] : [...v.filter(x => x !== q.exclusivo), o]);
+      r[q.id] = v; desenha(); }; d.appendChild(b); }); };
+  desenha();
+  moldura(q.titulo, d, {dica: 'Pode marcar mais de um.', valido: () => !r[q.id].length ? 'Marque pelo menos uma opção.' : (q.valida ? q.valida(r[q.id], r) : true)});
+}
+
+function validar(q, v, r) {
+  switch (q.tipo) {
+    case 'nome': if (/\d/.test(v) || v.split(/\s+/).length < 2) return 'Nome e sobrenome, sem números.'; break;
+    case 'texto': if (v.length < (q.min || 2)) return `Escreva pelo menos ${q.min || 2} caracteres.`; break;
+    case 'cpf': if (!cpfOk(v)) return 'CPF inválido: confira os 11 números.'; break;
+    case 'cnpj': if (!cnpjOk(v)) return 'CNPJ inválido: confira os 14 números.'; break;
+    case 'rg': if (!/^[0-9]{4,13}[0-9Xx]$/.test(v.replace(/[.\-\s]/g, ''))) return 'RG: de 5 a 14 caracteres (números; o último pode ser X).'; break;
+    case 'tel': if (!/^[1-9][0-9][0-9]{8,9}$/.test(so(v))) return 'DDD + número (10 ou 11 números).'; break;
+    case 'nasc': { const a = idade(v); if (!(a >= 16 && a <= 115)) return 'Data impossível (idade tem que ficar entre 16 e 115 anos).'; break; }
+    case 'int': case 'dinheiro': { const n = num(v); if (isNaN(n) || (q.tipo === 'int' && !Number.isInteger(n))) return 'Número inválido.';
+      const [a, b] = typeof q.faixa === 'function' ? q.faixa(r) : (q.faixa || [0, 1e9]);
+      if (n < a || n > b) return q.msgFaixa || `Valor entre ${a} e ${b}.`; break; }
+  }
+  if (q.valida) { const e = q.valida(['int', 'dinheiro'].includes(q.tipo) ? num(v) : v, r); if (e !== true) return e; }
+  return true;
+}
+function normaliza(q, v) {
+  const d = so(v);
+  if (q.tipo === 'cpf') return `${d.slice(0, 3)}.${d.slice(3, 6)}.${d.slice(6, 9)}-${d.slice(9)}`;
+  if (q.tipo === 'cnpj') return `${d.slice(0, 2)}.${d.slice(2, 5)}.${d.slice(5, 8)}/${d.slice(8, 12)}-${d.slice(12)}`;
+  if (q.tipo === 'tel') return d;
+  if (q.tipo === 'rg') return v.replace(/[.\-\s]/g, '').toUpperCase();
+  if (q.tipo === 'int' || q.tipo === 'dinheiro') return num(v);
+  return v;
+}
+
+function perguntar(q) {
+  const r = S.v.r, dica = typeof q.dica === 'function' ? q.dica(r) : (q.dica || '');
+  if (q.tipo === 'escolha') return escolha(q.id, q.titulo, q.op, {dica});
+  if (q.tipo === 'multi') return multi(q);
+  if (q.tipo === 'foto') return foto(q.id, q.titulo, {min: typeof q.min === 'function' ? q.min(r) : (q.min || 0), dica});
+  if (q.tipo === 'assinatura') return assinatura(q.id, q.titulo);
+  if (q.tipo === 'texto' && q.multilinha) return texto(q.id, q.titulo, {dica, multilinha: true, naoInf: q.naoInf, min: q.min});
+  const cfg = {nome: {}, texto: {}, cpf: {m: 'numeric', ph: 'só os 11 números'}, cnpj: {m: 'numeric', ph: 'só os 14 números'}, rg: {m: 'text', ph: 'só números'},
+               tel: {m: 'tel', ph: 'DDD + número'}, int: {m: 'numeric'}, dinheiro: {m: 'decimal', ph: '0,00'}, nasc: {t: 'date'}}[q.tipo] || {};
+  const atual = r[q.id] == null || r[q.id] === q.naoInf ? '' : (q.tipo === 'dinheiro' && typeof r[q.id] === 'number' ? brl(r[q.id]) : r[q.id]);
+  moldura(q.titulo, `<input id="in" type="${cfg.t || 'text'}" ${cfg.m ? `inputmode="${cfg.m}"` : ''} placeholder="${cfg.ph || ''}" value="${esc(atual)}"
+      ${q.tipo === 'nasc' ? `max="${hoje()}"` : ''} autocomplete="off">` + (q.naoInf ? `<button class="btn sec" id="naoinf">${esc(q.naoInf)}</button>` : ''),
+    {dica, valido: () => { const v = $('#in').value.trim();
+      if (!v) return q.naoInf ? `Preencha ou toque em "${q.naoInf}".` : 'Campo obrigatório.';
+      const e = validar(q, v, r); if (e !== true) return e; r[q.id] = normaliza(q, v); return true; }});
+  if (q.naoInf) $('#naoinf').onclick = () => { r[q.id] = q.naoInf; S.v.passo++; passo(); };
+}
+const MESES_EXT = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
+const localData = (mun, d = new Date()) => `${mun}/RS, ${d.getDate()} de ${MESES_EXT[d.getMonth()]} de ${d.getFullYear()}`;
 
 async function telaCT() {
   const a = S.v.acesso, cts = S.dados.cts.filter(c => c.acesso === a.name);
@@ -302,25 +505,26 @@ function passo() {
   if (COL[nome]) return escolha(nome, COL[nome], OP[nome], {dica: 'Já vem marcado o que sabemos deste acesso — confira e corrija se precisar.'});
   if (nome === 'alternativa') return texto('alternativa', 'Qual é a alternativa de acesso?');
   if (nome === 'status') return escolha('status', `Resultado desta visita ao CT ${r.ct} (${r.tentativa}ª visita)`, OP.status);
-  if (nome === 'quem_recusou') return texto('quem_recusou', 'Quem recusou? (nome e relação com o imóvel, se souber)', {obrig: false});
+  if (QI[nome]) return perguntar(QI[nome]);
+  if (nome === 'quem_recusou') return texto('quem_recusou', 'Quem recusou? (nome e relação com o imóvel, se souber)', {naoInf: 'Não quis se identificar'});
   if (nome === 'aviso') return escolha('aviso', 'Deixou aviso/adesivo com telefone?', ['Sim', 'Não']);
   if (nome === 'foto_aviso') return foto('foto_aviso', 'Foto do aviso deixado');
-  if (nome === 'vizinho') return texto('vizinho', 'Informação de vizinho (melhor dia e horário para encontrar)', {obrig: false});
-  if (nome === 'foto_evidencia') return foto('foto_evidencia', 'Foto 1 — EVIDÊNCIA do imóvel', {dica: 'Fachada / situação do imóvel.'});
-  if (nome === 'foto_acesso') return foto('foto_acesso', 'Foto 2 — ACESSO à rodovia');
-  if (nome === 'fotos_comp') return foto('foto_complementar', 'Fotos complementares (opcional)', {obrig: false, varias: true});
-  if (nome === 'fase3') return moldura('Ficha completa (pessoa física / jurídica e socioeconômica)', '<div class="aviso">Esta parte entra na próxima versão do app (fase 3). Por enquanto, descreva o cadastro na observação.</div>');
+  if (nome === 'vizinho') return texto('vizinho', 'Informação de vizinho (melhor dia e horário para encontrar)', {naoInf: 'Nenhum vizinho soube informar'});
+  if (nome === 'fotos_acesso') return foto('foto_acesso', 'Fotos do ACESSO', {min: 2, dica: 'No mínimo 2 fotos do acesso. Cada foto sai com data, hora e coordenadas.'});
   if (nome === 'obs') return texto('obs', 'OBSERVAÇÕES DA VISITA', {multilinha: true, min: 30, dica: 'O que aconteceu, com quem falou, retorno combinado…'});
   if (nome === 'pendente') return escolha('pendente', 'Ficou algo pendente para depois?', ['Sim', 'Não']);
   if (nome === 'pendente_o_que') return texto('pendente_o_que', 'O que ficou pendente?');
   if (nome === 'assinatura') return assinatura();
-  if (nome === 'sem_assinatura') return texto('sem_assinatura', 'Por que não assinou?');
+  if (nome === 'sem_assinatura') return texto('sem_assinatura', 'Por que não assinou?',
+    {naoInf: ['Ausente', 'Abandonado / ruína'].includes(r.status) ? 'Ninguém no local para assinar' : null});
   if (nome === 'revisao') return revisao();
 }
 
 function revisao() {
   const r = S.v.r, a = S.v.acesso;
-  moldura('Revisar e salvar', `<div class="cartao"><b>${esc(a.codigo)}</b> · CT ${r.ct} · ${r.tentativa}ª visita<br>${esc(r.status)} · ${S.v.fotos.length} foto(s)${r.assinatura_svg ? ' · assinado' : ''}<br><small>${esc(r.obs)}</small></div>
+  const quem = r.status !== ACEITOU ? '' : `<br>${esc(r.pf_pj)}: <b>${esc(PF(r) ? r.tit_nome : r.razao)}</b>${PF(r) && r.tit_cpf && ativa('tit_cpf') ? ' · CPF ' + esc(r.tit_cpf) : ''}${PJ(r) ? ' · CNPJ ' + esc(r.cnpj) : ''}` +
+    (PF(r) ? `<br>Socioeconômica: ${esc(r.socio_aceitou)}${perCapita(r) != null ? ` · R$ ${brl(perCapita(r))} por pessoa (${faixaPC(r)})` : ''}` : '');
+  moldura('Revisar e salvar', `<div class="cartao"><b>${esc(a.codigo)}</b> · CT ${r.ct} · ${r.tentativa}ª visita<br>${esc(r.status)} · ${S.v.fotos.length} foto(s)${r.assinatura_svg ? ' · assinado' : ' · sem assinatura'}${quem}<br><small>${esc(r.obs)}</small></div>
     <p class="dica">Ao salvar, a visita fica guardada no celular e é enviada quando tiver internet.</p>`);
   $('#seg').textContent = 'Salvar visita'; $('#seg').classList.add('ok');
   $('#seg').onclick = salvar;
@@ -331,19 +535,63 @@ async function salvar() {
   const visita = {id_envio: S.v.id, versao_app: VERSAO_APP, aparelho: S.aparelho, inicio: S.v.inicio, fim: new Date().toISOString(),
     gps_lat: S.gps ? S.gps.lat : '', gps_lon: S.gps ? S.gps.lon : '', gps_precisao_m: S.gps ? S.gps.prec : '', distancia_m: S.v.dist ?? '',
     justificativa_distancia: r.just_dist || '', 'Código': a.codigo, 'CT Nº': r.ct, 'Tentativa nº': r.tentativa + 'ª', novo_imovel: r.novo ? 'sim' : 'não',
-    'Data da visita': hoje(new Date(S.v.inicio)), 'Hora de início da visita': hora(new Date(S.v.inicio)),
-    'Status da aplicação da ficha': st === 'Abandonado / ruína' ? 'Ausente' : st,
+    'Data da visita': dataBR(hoje(new Date(S.v.inicio))), 'Hora de início da visita': hora(new Date(S.v.inicio)),
+    'Status da aplicação da ficha': st === 'Abandonado / ruína' ? 'Ausente' : (st === ACEITOU ? 'Concluído' : st),
     'O imóvel está abandonado/ruína?': st === 'Abandonado / ruína' ? 'Sim' : 'Não', 'Houve recusa em prestar informações?': st === 'Recusa' ? 'Sim' : 'Não',
-    'No momento da abordagem o imóvel está ocupado?': st === 'Concluído' ? 'Sim' : (st === 'Ausente' ? 'Não' : 'Não se aplica'),
+    'No momento da abordagem o imóvel está ocupado?': st === ACEITOU ? 'Sim' : (st === 'Ausente' ? 'Não' : 'Não se aplica'),
     quem_recusou: r.quem_recusou || '', 'Aviso/adesivo com telefone foi deixado no local?': r.aviso || '',
     'Informação de vizinho (melhor dia e horário para encontrar)': r.vizinho || '', Concessionaria: 'ViaSul', 'Município': a.municipio, UF: 'RS',
     CEP: a.cep, Rodovia: a.rodovia, KM: a.km, Sentido: a.sentido, 'Endereço': `${a.rodovia}, km ${a.km}, Pista ${a.sentido}`,
     ...Object.fromEntries(Object.entries(COL).map(([k, c]) => [c, r[k] || ''])), 'Qual é a alternativa de acesso?': r.alternativa || '',
     'Observações da visita': r.obs, 'O cadastro será atualizado depois? Há algo pendente?': r.pendente || '',
-    'O que está pendente? (documento, informação, retorno do morador…)': r.pendente_o_que || '', motivo_sem_assinatura: r.sem_assinatura || ''};
-  const arquivos = S.v.fotos.map(f => ({tipo: f.tipo, mime: f.mime, base64: f.base64, tirada_em: f.tirada_em, gps_lat: f.gps_lat, gps_lon: f.gps_lon}));
-  if (r.assinatura_svg) arquivos.push({tipo: 'assinatura', mime: 'image/svg+xml', base64: btoa(unescape(encodeURIComponent(r.assinatura_svg)))});
-  await DB.filaPor({id_envio: S.v.id, visita, socio: null, arquivos, salvo_em: new Date().toISOString()});
+    'O que está pendente? (documento, informação, retorno do morador…)': r.pendente_o_que || '',
+    motivo_sem_assinatura: r.assinatura_svg_nao ? (r.sem_assinatura || '') : '', 'Local e data': localData(a.municipio, new Date(S.v.inicio))};
+  // parte 3: só grava o que está valendo (resposta de tela que deixou de existir ao voltar e trocar não entra)
+  const v3 = id => { if (!ativa(id)) return ''; const x = r[id];
+    return Array.isArray(x) ? x.join(', ') : (id.endsWith('_nasc') ? dataBR(x) : (x ?? '')); };
+  const ROT = {tit: 'titular', conj: 'cônjuge', rep: 'representante', repc: 'cônjuge do representante'};
+  if (st === ACEITOU) Object.assign(visita, {
+    'É pessoa física ou jurídica ?': v3('pf_pj'), 'Relação com o imóvel': v3('relacao'), 'Possui matrícula do imóvel ou documento equivalente?': v3('matricula'),
+    'Nome completo': v3('tit_nome'), CPF: v3('tit_cpf'), 'RG Nº': v3('tit_rg'), 'Data de nascimento': v3('tit_nasc'), 'Telefone (WhatsApp)': v3('tit_tel'),
+    motivo_sem_documento: Object.entries(ROT).filter(([p]) => v3(p + '_motivo')).map(([p, n]) => `${n}: ${v3(p + '_motivo')}`).join(' | '),
+    'Estado civil': v3('estado_civil'), 'Cônjuge/companheiro(a)': v3('conj_nome'), 'CPF do cônjuge': v3('conj_cpf'), 'RG Nº do cônjuge': v3('conj_rg'),
+    'Data de nascimento do cônjuge': v3('conj_nasc'), 'Telefone (WhatsApp) do cônjuge': v3('conj_tel'),
+    'Razão social': v3('razao'), CNPJ: v3('cnpj'), 'Regime tributário (declarado)': v3('regime'), 'Optante do simples nacional?': v3('simples'),
+    'Representante legal': v3('rep_nome'), 'CPF do representante legal': v3('rep_cpf'), 'RG Nº do representante legal': v3('rep_rg'),
+    'Data de nascimento do representante legal': v3('rep_nasc'), 'Telefone (WhatsApp) do representante legal': v3('rep_tel'),
+    'Estado civil do representante legal': v3('rep_estado_civil'), 'Cônjuge/companheiro(a) do representante legal': v3('repc_nome'),
+    'CPF do cônjuge do representante legal': v3('repc_cpf'), 'RG Nº do cônjuge do representante legal': v3('repc_rg'),
+    'Data de nascimento do cônjuge do representante legal': v3('repc_nasc'), 'Telefone (WhatsApp) do cônjuge do representante legal': v3('repc_tel'),
+    'Renda familiar per capita': PF(r) ? (faixaPC(r) || v3('renda_pc_pergunta')) : '',
+    'Possui declaração de aptidão ao PRONAF (DAP/CAF)?': v3('dap'), 'Está inscrito no cadastro único (CadUnico) ou equivalente?': v3('cadunico')});
+  const socio = ativa('socio_aceitou') ? {'Código': a.codigo, 'CT Nº': r.ct, 'Data da visita': visita['Data da visita'],
+    'Aceitou responder a ficha socioeconômica?': v3('socio_aceitou'), motivo_nao_respondeu: v3('socio_motivo'),
+    'Quantidade de pessoas que residem no imóvel?': v3('total_pessoas'), 'Número de crianças (0 a 17 anos)': v3('criancas'),
+    'Número de adultos (18 anos ou mais)': v3('adultos'), 'Número de idosos ( ≥ 60 anos)': v3('idosos'), renda_informada: v3('renda_inf'),
+    'Renda familiar bruta TOTAL mensal (somar todas as rendas)': v3('renda_total'), renda_per_capita: perCapita(r) ?? '',
+    'As despesas essenciais da família (alimentação, moradia, água, energia, saúde e transporte) comprometem mais de 50% da renda familiar?': v3('despesas50'),
+    'Realiza gastos mensais com tratamento de saúde ou aquisição de medicamentos de uso contínuo?': v3('saude'), 'Qual o valor médio mensal? R$': v3('saude_valor'),
+    'Paga pensão alimentícia a dependentes?': v3('pensao'), 'Quanto (valor médio mensal)? R$': v3('pensao_valor'),
+    'A família possui veículo automotor (carro, moto, caminhão)?': v3('veiculo'), 'Qual o tipo?': v3('veic_tipo'), 'Qual o ano aproximado?': v3('veic_ano'),
+    'É utilizado como instrumento de trabalho?': v3('veic_trabalho'),
+    'Recebe Bolsa Família, Benefício de Prestação Continuada ou outro benefício do governo?': v3('beneficio'), 'Qual?': v3('benef_qual'),
+    'O imóvel onde reside é': v3('reside'), 'A família possui outro imóvel?': v3('outro_imovel'), 'Quantos?': v3('outro_qtd'), 'Onde?': v3('outro_onde'),
+    'Qual o tempo de residência no local (anos)?': v3('tempo'), 'O imóvel é utilizado para': v3('uso'),
+    'Falta água encanada, luz o dia todo ou rede de esgoto?': v3('falta'), 'O que falta?': v3('falta_o_que'),
+    'Nível de escolaridade do principal responsável (financeiro) pelo domicílio': v3('escolaridade'),
+    'A família possui algum dos seguintes marcadores sociais?': v3('marcadores'), 'Quantas? — Pessoa com deficiência': v3('qtd_pcd'),
+    'Quantas? — Pessoa com doença crônica ou grave': v3('qtd_cronica'), 'Respondeu todas as perguntas / Respondeu parcialmente': v3('socio_status'),
+    'Observações (socioeconômica)': [v3('socio_obs'), v3('assin_socio_motivo') && `(declarante não assinou: ${v3('assin_socio_motivo')})`].filter(Boolean).join(' '),
+    'Local e data': visita['Local e data']} : null;
+  // arquivos: só de telas que valem (foto do aviso / documentos de tela abandonada não sobem)
+  const telas = new Set(PASSOS());
+  const fotoVale = f => f.tipo === 'foto_acesso' || (f.tipo === 'foto_aviso' && telas.has('foto_aviso')) || (f.tipo === 'docs' && telas.has('docs'));
+  const arquivos = S.v.fotos.filter(fotoVale).map(f => ({tipo: f.tipo === 'docs' ? 'documento' : f.tipo, mime: f.mime, base64: f.base64,
+    tirada_em: f.tirada_em, gps_lat: f.gps_lat, gps_lon: f.gps_lon}));
+  const svg = s => btoa(unescape(encodeURIComponent(s)));
+  if (r.assinatura_svg) arquivos.push({tipo: 'assinatura', mime: 'image/svg+xml', base64: svg(r.assinatura_svg)});
+  if (socio && ativa('assin_socio') && r.assin_socio) arquivos.push({tipo: 'assinatura_socio', mime: 'image/svg+xml', base64: svg(r.assin_socio)});
+  await DB.filaPor({id_envio: S.v.id, visita, socio, arquivos, salvo_em: new Date().toISOString()});
   S.v = null;
   aviso('Visita salva no celular.' + (navigator.onLine ? ' Enviando…' : ' Será enviada quando tiver internet.'), 'ok');
   telaInicio();
