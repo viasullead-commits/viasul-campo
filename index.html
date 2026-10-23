@@ -50,6 +50,7 @@ body.commenu main{padding-bottom:84px}
 .topo-ficha{display:flex;justify-content:space-between;align-items:center;margin:-4px 0 6px;color:#5b6475;font-size:13px}
 .topo-ficha button{border:1px solid #e5b4ae;background:#fdf1ef;color:var(--verm);border-radius:8px;padding:7px 12px;font-size:14px;font-weight:600}
 .leg-bt{display:block;width:100%;margin:5px 0 2px;padding:7px 10px;border:0;border-radius:6px;background:#e8590c;color:#fff;font-weight:700;font-size:13px}
+.tt-ret{background:#fff1c2;border:1px solid #b7791f;color:#7a5b00;font-weight:600}
 .mk-rev{background:#e8590c;border:2px solid #1d2433;border-radius:50%;color:#fff;font:700 11px/24px system-ui,sans-serif;text-align:center;letter-spacing:-.3px}
 .prog{height:6px;background:#e4e8f0;border-radius:3px;margin-bottom:12px}.prog div{height:6px;background:var(--az2);border-radius:3px}
 .tag{display:inline-block;padding:2px 8px;border-radius:12px;background:#e4e8f0;font-size:13px;margin-right:4px}
@@ -65,7 +66,7 @@ body.commenu main{padding-bottom:84px}
 <script>
 'use strict';
 const SERVIDOR = 'https://script.google.com/macros/s/AKfycbz-lzDXOHPw396P5CxXM3u2Uuu_tyFspxY5d39bw-EZ7xwku3MAgVlIVwqFO8ubZh-0QA/exec';
-const VERSAO_APP = '2026-10-22.30';
+const VERSAO_APP = '2026-10-22.31';
 const RAIO_LISTA_M = 250;           // acessos mais perto que isso aparecem na lista
 const AVISO_DIST_M = 300, JUST_DIST_M = 500;
 
@@ -244,10 +245,95 @@ async function relatar({codigo, ct, ref, titulo}) {
   };
 }
 
+// ---------------- retorno agendado: na visita (ausente) ou avulso (a pessoa ligou depois do aviso, pendência…); a equipe toda vê ----------------
+const PERIODOS = ['Manhã', 'Tarde', 'Qualquer horário'], RETORNO_MAX_DIAS = 90;
+const DIAS_SEM = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
+const diaSemana = iso => { const d = new Date(iso + 'T12:00'); return isNaN(d) ? iso : `${DIAS_SEM[d.getDay()]} ${dois(d.getDate())}/${dois(d.getMonth() + 1)}`; };
+const campoRetorno = (data, periodo) => `<input type="date" id="ret_data" min="${hoje()}" max="${hoje(new Date(Date.now() + RETORNO_MAX_DIAS * 864e5))}" value="${esc(data || '')}">
+  <div class="lista" id="ret_per" style="margin-top:8px">${PERIODOS.map(p => `<button type="button" class="${p === periodo ? 'sel' : ''}">${p}</button>`).join('')}</div>`;
+function ligarRetorno(raiz) {
+  raiz.querySelectorAll('#ret_per button').forEach(b => b.onclick = () => { raiz.querySelectorAll('#ret_per button').forEach(x => x.classList.remove('sel')); b.classList.add('sel'); });
+}
+function lerRetorno(raiz) {             // {data (aaaa-mm-dd), periodo} ou o texto do erro
+  const data = raiz.querySelector('#ret_data').value, sel = raiz.querySelector('#ret_per .sel');
+  if (!data) return 'Escolha o dia do retorno.';
+  if (data < hoje()) return 'O dia do retorno não pode ser antes de hoje.';
+  if (data > hoje(new Date(Date.now() + RETORNO_MAX_DIAS * 864e5))) return `No máximo ${RETORNO_MAX_DIAS} dias para frente.`;
+  if (!sel) return 'Escolha o período (manhã, tarde ou qualquer horário).';
+  return {data, periodo: sel.textContent};
+}
+async function retornosConhecidos() {   // servidor (equipe toda) + deste celular (das visitas e os avulsos que ainda não subiram), sem repetir
+  const vistos = new Set(), minhas = (await DB.get('minhas')) || [], meus = (await DB.get('meus_retornos')) || [];
+  const daVisita = minhas.filter(m => m.retorno).map(m => ({id: m.id, codigo: m.codigo, ct: m.ct, data: m.retorno.data, periodo: m.retorno.periodo,
+    obs: m.retorno.obs || '', tecnico: m.tecnico, criado: m.data}));
+  return [...(S.dados.retornos || []), ...daVisita, ...meus].filter(x => x.id && !vistos.has(x.id) && vistos.add(x.id));
+}
+const chaveCT = (cod, ct) => nomeAcesso(cod) + '__' + dois(+so(ct) || 1);
+async function retornosMarcados() {     // cada retorno com a situação: hoje / agendado / feito / nao_feito (feito = visita ou relato no CT a partir do dia)
+  const feitos = [...await visitasConhecidas(), ...((await DB.get('meus_relatos')) || [])], dia = hoje();
+  return (await retornosConhecidos()).map(x => { const iso = isoData(x.data);
+    const feito = feitos.some(f => f.id !== x.id && f.id !== x.ref && chaveCT(f.codigo, f.ct) === chaveCT(x.codigo, x.ct) && isoData(f.data) >= iso);
+    return {...x, iso, sit: feito ? 'feito' : iso === dia ? 'hoje' : iso > dia ? 'agendado' : 'nao_feito'}; })
+    .sort((a, b) => a.iso.localeCompare(b.iso));
+}
+const textoRetorno = x => `${diaSemana(x.iso)}${x.periodo ? ', ' + String(x.periodo).toLowerCase() : ''}`;
+function itemRetorno(x) {               // tocar abre o acesso (p/ fazer a visita ou relatar)
+  const [cl, txt] = {hoje: ['pend', 'hoje'], agendado: ['and', 'agendado'], feito: ['ok', 'feito ✓'], nao_feito: ['rev', 'não feito']}[x.sit];
+  const b = el(`<button class="item"><span class="pill ${cl}">${txt}</span> <b>${esc(x.codigo)}</b> · CT ${esc(dois(+so(x.ct) || 1))} · ${esc(textoRetorno(x))}<br>
+    <small>combinado por ${esc(x.tecnico || '—')}${x.obs ? ' · ' + esc(x.obs) : ''}</small></button>`);
+  b.onclick = () => { const a = S.dados.acessos.find(y => y.codigo === x.codigo); if (a) escolherAcesso(a); else aviso('Esse acesso não está na lista do celular.', 'erro'); };
+  return b;
+}
+async function agendarRetorno({codigo, ct, ref, titulo} = {}) {
+  esconderMenu();
+  let alvo = {codigo: codigo || '', ct: ct ? dois(+so(ct)) : ''};
+  $('#hdr').textContent = codigo ? `${codigo}${ct ? ' · CT ' + alvo.ct : ''}` : 'Agendar retorno';
+  $('#tela').innerHTML = `<h2>${esc(titulo || 'Agendar retorno')}</h2>
+    <p class="dica">Ex.: a pessoa viu o aviso e ligou, ou ficou um documento para buscar. A equipe toda vê no "Meu dia" e no mapa.</p>
+    ${codigo ? '' : '<input id="ret_ac" type="search" placeholder="🔍 Código do acesso" autocomplete="off"><div id="ret_res" class="lista"></div>'}
+    <div id="ret_alvo"></div>
+    <p class="dica" style="margin-top:12px"><b>Dia e período combinados</b></p>${campoRetorno()}
+    <p class="dica" style="margin-top:12px"><b>Com quem combinou / telefone</b> (opcional)</p>
+    <textarea id="ret_obs" style="min-height:80px" placeholder="Ex.: Dona Maria ligou, pediu sábado de manhã — 51 99999-0000"></textarea>
+    <div class="erro" id="err"></div>
+    <div class="barra"><button class="btn sec" id="volta">Cancelar</button><button class="btn ok" id="seg">Agendar retorno</button></div>`;
+  ligarRetorno($('#tela'));
+  const mostraAlvo = () => { $('#ret_alvo').innerHTML = alvo.codigo && alvo.ct ? `<div class="cartao"><b>${esc(alvo.codigo)}</b> · CT ${esc(alvo.ct)}</div>` : ''; };
+  mostraAlvo();
+  if (!codigo) $('#ret_ac').oninput = () => {
+    const t = normTxt($('#ret_ac').value).replace(/[^0-9a-z]/g, ''), res = $('#ret_res'); res.innerHTML = ''; alvo = {codigo: '', ct: ''}; mostraAlvo();
+    if (t.length < 2) return;
+    const achou = S.dados.acessos.filter(a => normTxt(a.codigo).replace(/[^0-9a-z]/g, '').includes(t)).slice(0, 6);
+    if (!achou.length) return res.appendChild(el('<div class="dica">Nenhum acesso com esse código.</div>'));
+    achou.forEach(a => { const b = el(`<button>${esc(a.codigo)}<br><small>${esc(a.municipio)} · km ${esc(a.km)} ${esc(a.sentido)}</small></button>`);
+      b.onclick = async () => { res.innerHTML = ''; $('#ret_ac').value = a.codigo;
+        const cts = (await ctsDoAcesso(a)).filter(c => !String(c.name).endsWith('__NOVO'));
+        if (!cts.length) return res.appendChild(el('<div class="aviso">Esse acesso ainda não tem CT. Agende depois da primeira visita.</div>'));
+        res.appendChild(el('<div class="dica">Qual CT?</div>'));
+        cts.forEach(c => { const bc = el(`<button>${esc(String(c.label || 'CT ' + c.ct).replace(/Concluído/g, ACEITOU))}</button>`);
+          bc.onclick = () => { alvo = {codigo: a.codigo, ct: c.ct}; res.innerHTML = ''; mostraAlvo(); }; res.appendChild(bc); }); };
+      res.appendChild(b); });
+  };
+  $('#volta').onclick = () => telaDia();
+  $('#seg').onclick = async () => {
+    if (!alvo.codigo || !alvo.ct) { $('#err').textContent = 'Escolha o acesso e o CT.'; return; }
+    const e = lerRetorno($('#tela')); if (typeof e === 'string') { $('#err').textContent = e; return; }
+    const agora = new Date(), id = 'a' + uid().slice(1), obs = $('#ret_obs').value.trim();
+    const retorno = {id_envio: id, 'Código': alvo.codigo, 'CT Nº': alvo.ct, data_retorno: dataBR(e.data), periodo: e.periodo, obs, ref_visita: ref || '',
+      criado_em: `${dataBR(hoje(agora))} ${hora(agora)}`, aparelho: S.aparelho, versao_app: VERSAO_APP};
+    await DB.filaPor({id_envio: id, tipo: 'retorno', retorno, token: S.token, tecnico: S.tecnico, salvo_em: agora.toISOString()});
+    const m = (await DB.get('meus_retornos')) || [];
+    m.push({id, codigo: alvo.codigo, ct: alvo.ct, data: retorno.data_retorno, periodo: e.periodo, obs, tecnico: S.tecnico, criado: dataBR(hoje(agora)), ref: ref || ''});
+    await DB.set('meus_retornos', m.slice(-500));
+    aviso(`Retorno agendado: ${diaSemana(e.data)}, ${e.periodo.toLowerCase()}.` + (navigator.onLine ? ' Enviando…' : ' Será enviado quando tiver internet.'), 'ok');
+    telaDia(); if (navigator.onLine) sincronizar(false);
+  };
+}
+
 // ---------------- Meu dia: TUDO o que esta pessoa fez (por data, mais recente primeiro) + contadores de hoje ----------------
 // fontes: visitas do servidor feitas por ela (qualquer celular) + as deste celular (inclusive as que ainda não subiram) + relatos
 const isoDia = d => /^\d{2}\/\d{2}\/\d{4}$/.test(d) ? d.split('/').reverse().join('-') : String(d || '');
-let diaMostrar = 60;                   // quantas visitas mostrar (botão "mostrar mais")
+let diaMostrar = 60, filtroDia = '';   // quantas visitas mostrar (botão "mostrar mais") · texto da busca do Meu dia
 async function telaDia() {
   menu('dia');
   const dia = dataBR(hoje()), fila = await DB.filaTodos(), pend = new Set(fila.map(f => f.id_envio));
@@ -258,6 +344,7 @@ async function telaDia() {
     .map(v => ({...v, data: dataBR(v.data)}))
     .sort((x, y) => (isoDia(y.data) + (y.hora || '')).localeCompare(isoDia(x.data) + (x.hora || '')));
   const rel = ((await DB.get('meus_relatos')) || []).filter(x => !x.tecnico || x.tecnico === S.tecnico).reverse();
+  const rets = await retornosMarcados();
   const deHoje = vis.filter(v => v.data === dia), conta = s => deHoje.filter(v => (v.aband === 'Sim' ? 'Abandonado' : v.status) === s).length;
   $('#hdr').textContent = `${nomeColab(S.tecnico)} · ${fila.length} p/ enviar`;
   $('#tela').innerHTML = `<h2>Meu dia</h2>
@@ -265,35 +352,58 @@ async function telaDia() {
       Total já feito: <b>${vis.length}</b> visita(s) · <span class="pill ${fila.length ? 'pend' : 'ok'}">${fila.length ? fila.length + ' aguardando envio' : 'tudo enviado'}</span></div>
     ${botaoInstalar()}
     ${fila.length ? '<button class="btn sec" id="sinc">Enviar agora</button>' : ''}
+    <div id="ret_dia"></div>
+    <button class="btn sec" id="agendar">📅 Agendar retorno</button>
+    <input id="busca_dia" type="search" placeholder="🔍 Buscar por código, data (22/10) ou nome" value="${esc(filtroDia)}" autocomplete="off" style="margin-top:4px">
     <div id="lista_dia"></div>`;
   if ($('#sinc')) $('#sinc').onclick = sincronizar;
-  const L0 = $('#lista_dia');
-  if (rasc && rasc.v) {
-    const v = rasc.v, b = el(`<button class="item"><span class="pill and">em andamento</span> <b>${esc(v.acesso.codigo)}</b>${v.r.ct ? ' · CT ' + esc(v.r.ct) : ''}<br><small>${v.r.status ? esc(v.r.status) + ' · ' : ''}${v.fotos.length} foto(s) · toque para continuar</small></button>`);
-    b.onclick = () => telaRascunho(rasc); L0.appendChild(b);
-  }
-  if (!vis.length && !(rasc && rasc.v)) L0.appendChild(el('<p class="dica">Nenhuma visita feita ainda.</p>'));
-  let dataAtual = '';
-  vis.slice(0, diaMostrar).forEach(v => {
-    if (v.data !== dataAtual) { dataAtual = v.data;   // cabeçalho de cada dia
-      L0.appendChild(el(`<div style="margin:16px 0 4px;font-weight:700;color:#1f3864">📅 ${esc(v.data)}${v.data === dia ? ' (hoje)' : ''} · ${vis.filter(x => x.data === v.data).length} visita(s)</div>`)); }
-    const st = v.aband === 'Sim' ? 'Abandonado' : (v.status === 'Concluído' ? ACEITOU : v.status);
-    const b = el(`<button class="item"><span class="pill ${pend.has(v.id) ? 'pend' : 'ok'}">${pend.has(v.id) ? 'aguardando envio' : 'enviada'}</span> <b>${esc(v.codigo)}</b> · CT ${esc(v.ct)}${v.tentativa ? ' · ' + esc(v.tentativa) : ''}<br>
-      <small>${esc(v.data)}${v.hora ? ' ' + esc(v.hora) : ''} · ${esc(st)}${v.titular ? ' · ' + esc(v.titular) : ''}</small></button>`);
-    b.onclick = () => opcoesVisita(v, st, pend.has(v.id)); L0.appendChild(b);
-  });
-  if (vis.length > diaMostrar) { const mais = el(`<button class="btn sec">Mostrar mais (${vis.length - diaMostrar})</button>`);
-    mais.onclick = () => { diaMostrar += 100; telaDia(); }; L0.appendChild(mais); }
-  if (rel.length) { L0.appendChild(el('<h2 style="font-size:17px;margin-top:18px">Relatos de modificação</h2>'));
-    rel.forEach(x => L0.appendChild(el(`<div class="item"><span class="pill ${pend.has(x.id) ? 'pend' : 'ok'}">${pend.has(x.id) ? 'aguardando envio' : 'enviado'}</span> <b>${esc(x.codigo)}</b> · CT ${esc(x.ct)} · ${esc(x.data)} ${esc(x.hora)}<br><small>${esc(x.texto)}</small></div>`))); }
+  $('#agendar').onclick = () => agendarRetorno();
+  // retornos combinados da equipe toda: os de hoje em destaque + os próximos
+  const R0 = $('#ret_dia'), rHoje = rets.filter(x => x.sit === 'hoje'), rProx = rets.filter(x => x.sit === 'agendado');
+  if (rHoje.length) { R0.appendChild(el(`<div class="aviso" style="margin-top:8px"><b>📅 Retornos de hoje (${rHoje.length})</b> — toque para abrir o acesso</div>`)); rHoje.forEach(x => R0.appendChild(itemRetorno(x))); }
+  if (rProx.length) { R0.appendChild(el(`<div style="margin:12px 0 4px;font-weight:700;color:#1f3864">Próximos retornos (${rProx.length})</div>`)); rProx.slice(0, 30).forEach(x => R0.appendChild(itemRetorno(x))); }
+  // busca por código, data ou nome: filtra visitas, relatos e o histórico de retornos
+  const so09 = s => normTxt(s).replace(/[^0-9a-z]/g, '');
+  const desenha = () => {
+    const L0 = $('#lista_dia'); L0.innerHTML = '';
+    const f = normTxt(filtroDia), f2 = so09(filtroDia);
+    const casa = x => !f2 || so09(x.codigo).includes(f2) || so09(x.data).includes(f2) || normTxt(x.titular || x.texto || x.obs).includes(f);
+    const lista = vis.filter(casa), limite = f2 ? lista.length : diaMostrar;
+    if (f2) L0.appendChild(el(`<div class="dica" style="margin-top:8px">${lista.length} visita(s) encontrada(s)</div>`));
+    if (!f2 && rasc && rasc.v) {
+      const v = rasc.v, b = el(`<button class="item"><span class="pill and">em andamento</span> <b>${esc(v.acesso.codigo)}</b>${v.r.ct ? ' · CT ' + esc(v.r.ct) : ''}<br><small>${v.r.status ? esc(v.r.status) + ' · ' : ''}${v.fotos.length} foto(s) · toque para continuar</small></button>`);
+      b.onclick = () => telaRascunho(rasc); L0.appendChild(b);
+    }
+    if (!vis.length && !(rasc && rasc.v)) L0.appendChild(el('<p class="dica">Nenhuma visita feita ainda.</p>'));
+    let dataAtual = '';
+    lista.slice(0, limite).forEach(v => {
+      if (v.data !== dataAtual) { dataAtual = v.data;   // cabeçalho de cada dia
+        L0.appendChild(el(`<div style="margin:16px 0 4px;font-weight:700;color:#1f3864">📅 ${esc(v.data)}${v.data === dia ? ' (hoje)' : ''} · ${lista.filter(x => x.data === v.data).length} visita(s)</div>`)); }
+      const st = v.aband === 'Sim' ? 'Abandonado' : (v.status === 'Concluído' ? ACEITOU : v.status);
+      const b = el(`<button class="item"><span class="pill ${pend.has(v.id) ? 'pend' : 'ok'}">${pend.has(v.id) ? 'aguardando envio' : 'enviada'}</span> <b>${esc(v.codigo)}</b> · CT ${esc(v.ct)}${v.tentativa ? ' · ' + esc(v.tentativa) : ''}<br>
+        <small>${esc(v.data)}${v.hora ? ' ' + esc(v.hora) : ''} · ${esc(st)}${v.titular ? ' · ' + esc(v.titular) : ''}</small></button>`);
+      b.onclick = () => opcoesVisita(v, st, pend.has(v.id)); L0.appendChild(b);
+    });
+    if (lista.length > limite) { const mais = el(`<button class="btn sec">Mostrar mais (${lista.length - limite})</button>`);
+      mais.onclick = () => { diaMostrar += 100; telaDia(); }; L0.appendChild(mais); }
+    const relF = rel.filter(casa);
+    if (relF.length) { L0.appendChild(el('<h2 style="font-size:17px;margin-top:18px">Relatos de modificação</h2>'));
+      relF.forEach(x => L0.appendChild(el(`<div class="item"><span class="pill ${pend.has(x.id) ? 'pend' : 'ok'}">${pend.has(x.id) ? 'aguardando envio' : 'enviado'}</span> <b>${esc(x.codigo)}</b> · CT ${esc(x.ct)} · ${esc(x.data)} ${esc(x.hora)}<br><small>${esc(x.texto)}</small></div>`))); }
+    const hist = rets.filter(x => ['feito', 'nao_feito'].includes(x.sit) && casa(x)).reverse();
+    if (hist.length) { L0.appendChild(el(`<h2 style="font-size:17px;margin-top:18px">Histórico de retornos (${hist.length})</h2>`));
+      hist.slice(0, f2 ? hist.length : 50).forEach(x => L0.appendChild(itemRetorno(x))); }
+  };
+  $('#busca_dia').oninput = () => { filtroDia = $('#busca_dia').value; desenha(); };
+  desenha();
 }
 function opcoesVisita(v, st, pendente) {
   $('#tela').innerHTML = `<h2>${esc(v.codigo)} · CT ${esc(v.ct)}</h2>
     <div class="cartao">${v.tentativa ? esc(v.tentativa) + ' visita · ' : ''}${esc(st)}${v.hora ? ' · ' + esc(v.hora) : ''}${v.titular ? '<br>' + esc(v.titular) : ''}<br>
       <span class="pill ${pendente ? 'pend' : 'ok'}">${pendente ? 'aguardando envio' : 'enviada'}</span></div>
     <p class="dica">Visita salva não é mais editada no celular. Se algo mudou ou ficou errado, relate aqui que o escritório corrige.</p>
-    <button class="btn" id="rel">✏️ Relatar modificação nesta visita</button><button class="btn sec" id="volta">Voltar</button>`;
+    <button class="btn" id="rel">✏️ Relatar modificação nesta visita</button><button class="btn sec" id="ret">📅 Agendar retorno neste CT</button><button class="btn sec" id="volta">Voltar</button>`;
   $('#rel').onclick = () => relatar({codigo: v.codigo, ct: v.ct, ref: v.id, titulo: 'Relatar modificação nesta visita'});
+  $('#ret').onclick = () => agendarRetorno({codigo: v.codigo, ct: v.ct, ref: v.id, titulo: 'Agendar retorno neste CT'});
   $('#volta').onclick = () => telaDia();
 }
 
@@ -329,6 +439,10 @@ async function telaInicio() {
     mk.bindTooltip(`${esc(a.codigo)} — ${esc(textoSit(s))}`).on('click', () => escolherAcesso(a)).addTo(grupos[tipo]); });
   const ordem = () => grupos.encerrado.eachLayer(l => l.bringToBack());   // novos por cima dos encerrados (revisitas já ficam acima de tudo)
   Object.entries(grupos).forEach(([t, g]) => { if (!ocultos.has(t)) g.addTo(m); }); ordem();
+  // retorno combinado p/ hoje: anel amarelo tracejado no acesso (aparece mesmo com o tipo escondido)
+  const retHoje = {}; (await retornosMarcados()).filter(x => x.sit === 'hoje').forEach(x => (retHoje[nomeAcesso(x.codigo)] = retHoje[nomeAcesso(x.codigo)] || []).push(x));
+  S.dados.acessos.filter(a => retHoje[a.name]).forEach(a => L.circleMarker([+a.lat, +a.lon], {radius: 15, color: '#b7791f', weight: 3, dashArray: '4 4', fill: false, interactive: false})
+    .bindTooltip(`📅 ${esc(a.codigo)} — retorno hoje`, {permanent: true, direction: 'top', offset: [0, -14], className: 'tt-ret'}).addTo(m));
   const SO_REV = ['novo', 'encerrado'], soRev = () => ocultos.size === 2 && SO_REV.every(t => ocultos.has(t));
   const leg = L.control({position: 'bottomleft'});
   leg.onAdd = () => { const d = el(`<div class="legenda"><button class="leg-bt" id="so_rev">${soRev() ? 'Mostrar todos' : 'Só revisitas'}</button>${['revisita', 'novo', 'encerrado'].map(t =>
@@ -373,7 +487,8 @@ async function telaInicio() {
       : '<div class="aviso">Nenhum acesso no celular — toque em "Enviar visitas salvas e atualizar acessos" com internet.</div>'; return; }
     $('#perto').innerHTML = `<div class="dica">GPS ±${S.gps.prec} m · acesso mais perto: <b>${esc(mais.a.codigo)}</b> (${Math.round(mais.d)} m)</div>`;
     (lista.length ? lista : [mais]).forEach(x => { const s = sit[x.a.name], c = COR_SIT[s.tipo];
-      const b = el(`<button>${esc(x.a.codigo)} <span class="tag">${Math.round(x.d)} m</span> <span class="pill ${c.pill}">${c.nome}</span><br><small>${esc(x.a.municipio)} · km ${esc(x.a.km)} ${esc(x.a.sentido)}<br>${esc(textoSit(s))}</small></button>`);
+      const rh = retHoje[x.a.name] ? `<span class="pill pend">📅 retorno hoje${retHoje[x.a.name][0].periodo ? ' · ' + esc(String(retHoje[x.a.name][0].periodo).toLowerCase()) : ''}</span>` : '';
+      const b = el(`<button>${esc(x.a.codigo)} <span class="tag">${Math.round(x.d)} m</span> <span class="pill ${c.pill}">${c.nome}</span> ${rh}<br><small>${esc(x.a.municipio)} · km ${esc(x.a.km)} ${esc(x.a.sentido)}<br>${esc(textoSit(s))}</small></button>`);
       b.onclick = () => escolherAcesso(x.a, x.d); $('#perto').appendChild(b); });
   };
   window.atualizaMapa();
@@ -392,6 +507,7 @@ async function sincronizar(manual = true) {   // envia a fila (só apaga do celu
       for (const v of fila.filter(v => !feitos.has(v.id_envio))) {
         feitos.add(v.id_envio);
         try { const r = await api(v.tipo === 'relato' ? {acao: 'relatar', token: v.token || S.token, relato: v.relato}
+                                    : v.tipo === 'retorno' ? {acao: 'agendar', token: v.token || S.token, retorno: v.retorno}
                                     : {acao: 'enviar', token: v.token || S.token, visita: v.visita, socio: v.socio, arquivos: v.arquivos});   // sai no nome de QUEM FEZ
           if (r.ok) { await DB.filaTira(v.id_envio); ok++; if (r.avisos && r.avisos.length) aviso(r.avisos.join('\n'), 'erro'); }
           else { erro = r.erro; if (r.ocupado) break; } }
@@ -440,7 +556,8 @@ function PASSOS() {                    // lista de telas conforme as respostas (
   if (S.v.dist > JUST_DIST_M) p.push('just_dist');
   p.push(...Object.keys(COL)); if (r.acesso_e === 'Tem alternativa existente') p.push('alternativa');
   p.push('status');
-  if (st === 'Ausente' || st === 'Recusa') { if (st === 'Recusa') p.push('quem_recusou'); p.push('aviso'); if (r.aviso === 'Sim') p.push('foto_aviso'); if (st === 'Ausente') p.push('vizinho'); }
+  if (st === 'Ausente' || st === 'Recusa') { if (st === 'Recusa') p.push('quem_recusou'); p.push('aviso'); if (r.aviso === 'Sim') p.push('foto_aviso');
+    if (st === 'Ausente') { p.push('vizinho', 'retorno'); if (r.retorno === 'Sim') p.push('retorno_quando'); } }
   p.push('fotos_acesso');
   // ordem: fundiária inteira (dados da pessoa → observação → pendência → assinatura) e SÓ DEPOIS a socioeconômica
   const vale = q => !q.quando || q.quando(r), iSocio = Q.findIndex(q => q.id === 'socio_aceitou');
@@ -903,6 +1020,41 @@ function perguntar(q) {
     $('#cal').onclick = () => { const c = $('#cald'); try { c.showPicker(); } catch (e) { c.focus(); c.click(); } };
     $('#cald').onchange = e => { if (e.target.value) $('#in').value = dataBR(e.target.value); };
   }
+  if (q.tipo === 'cpf') {                // CPF que já tem cadastro em outro imóvel → avisa na hora (o titular pode puxar os dados de lá)
+    const segOrig = $('#seg').onclick, chave = q.id + '_conferido';
+    $('#seg').onclick = async () => {
+      const v = $('#in').value.trim(), d = so(v);
+      if (!cpfOk(v) || r[chave] === d) return segOrig();
+      $('#seg').disabled = true; $('#seg').textContent = 'Conferindo CPF…';
+      const achou = await cpfJaCadastrado(d);
+      if (!$('#seg') || PASSOS()[S.v.passo] !== q.id) return;   // saiu da tela enquanto conferia
+      $('#seg').disabled = false; $('#seg').textContent = 'Próximo';
+      if (!achou) { r[chave] = d; return segOrig(); }
+      const titular = q.id === 'tit_cpf' && so(achou.doc) === d, velho = $('#cpf_dup'); if (velho) velho.remove();
+      const cx = el(`<div class="aviso" id="cpf_dup">⚠ Este CPF já tem cadastro: <b>${esc(achou.nome)}</b><br>
+        <small>${esc(achou.codigo)} · CT ${esc(achou.ct)} · ${esc(achou.data)}${achou.tecnico ? ' · ' + esc(achou.tecnico) : ''}${achou.local ? ' · deste celular' : ''}</small>
+        ${titular ? '<p class="dica" style="margin:6px 0 0">Se for a mesma pessoa, use os dados de lá (você confere tela por tela).</p><button class="btn ok" id="dup_usar">Usar os dados desse cadastro</button>' : ''}
+        <button class="btn sec" id="dup_seg">Continuar mesmo assim</button></div>`);
+      $('#corpo').appendChild(cx);
+      cx.querySelector('#dup_seg').onclick = () => { r[chave] = d; segOrig(); };
+      if (titular) cx.querySelector('#dup_usar').onclick = async () => {
+        let full = achou.full;
+        if (!full) { $('#err').textContent = 'Carregando o cadastro…';
+          try { const c = await api({acao: 'cadastro', token: S.token, id: achou.id}, 25000); if (!c.ok) throw new Error(c.erro); full = {visita: c.visita, socio: c.socio}; }
+          catch (e) { $('#err').textContent = 'Sem sinal para carregar esse cadastro agora. Continue mesmo assim ou tente de novo.'; return; } }
+        aplicarCopia(full, true, true); r.copia_cpf = true; r[chave] = d; S.v.copiaItem = achou; S.v.passo++; passo();
+      };
+    };
+  }
+}
+async function cpfJaCadastrado(d) {     // outro cadastro (deste celular ou do servidor) com este CPF — ignora o que já foi copiado de propósito
+  const ignora = S.v.copiaItem && S.v.copiaItem.id;
+  const tem = it => it.id !== ignora && it.id !== S.v.id && String(it.docs || '').split(' ').includes(d);
+  const local = ((await DB.get('historico')) || []).map(itemLocal).filter(tem);
+  if (local.length) return local[local.length - 1];
+  if (!navigator.onLine) return null;
+  try { const res = await api({acao: 'buscar', token: S.token, termo: d}, 8000); return res.ok ? (res.resultados.find(tem) || null) : null; }
+  catch (e) { return null; }             // sem sinal: segue (o escritório confere depois)
 }
 const MESES_EXT = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
 const localData = (mun, d = new Date()) => `${mun}/RS, ${d.getDate()} de ${MESES_EXT[d.getMonth()]} de ${d.getFullYear()}`;
@@ -918,6 +1070,9 @@ async function visitasConhecidas() {   // servidor + deste celular (inclusive as
 }
 async function ctsDoAcesso(a) {
   const lista = calcCTs(a, S.dados.cts.filter(c => c.acesso === a.name), (await visitasConhecidas()).filter(v => nomeAcesso(v.codigo) === a.name));
+  const pendentes = (await retornosMarcados()).filter(x => ['hoje', 'agendado'].includes(x.sit) && nomeAcesso(x.codigo) === a.name);
+  lista.forEach(c => { const p = pendentes.find(x => dois(+so(x.ct) || 1) === c.ct);
+    if (p) c.label = `${c.label || 'CT ' + c.ct} — 📅 Retorno combinado: ${textoRetorno(p)}${p.tecnico ? ' (' + p.tecnico + ')' : ''}`; });
   const prox = dois(Math.max(0, ...lista.map(c => +c.ct)) + 1);
   lista.push({name: `${a.name}__NOVO`, label: `Imóvel NOVO neste acesso (vira CT ${prox}, 1ª visita)`, acesso: a.name, ct: prox, visitas: 0, proxima: 1, encerrado: 0});
   return lista;
@@ -976,12 +1131,14 @@ async function telaCT() {
     b.onclick = () => {
       if (String(c.encerrado) === '1') {   // CT encerrado: o campo não faz visita nova nem edita — só relata modificação
         [...d.children].forEach(x => x.classList.remove('sel')); delete S.v.r.ct;
-        const caixa = el(`<div class="aviso" style="margin:8px 0">Esse CT foi encerrado${c.desfecho ? ' (' + esc(String(c.desfecho).replace('Concluído', ACEITOU)) + ')' : ''}. Deseja relatar alguma modificação?
-          <div class="barra" style="position:static"><button class="btn sec" id="rel_n">Não</button><button class="btn" id="rel_s">Sim</button></div></div>`);
+        const caixa = el(`<div class="aviso" style="margin:8px 0">Esse CT foi encerrado${c.desfecho ? ' (' + esc(String(c.desfecho).replace('Concluído', ACEITOU)) + ')' : ''}. O que deseja fazer?
+          <button class="btn" id="rel_s">✏️ Relatar modificação</button><button class="btn sec" id="ret_s">📅 Agendar retorno</button><button class="btn sec" id="rel_n">Cancelar</button></div>`);
         const velho = document.querySelector('#caixa_enc'); if (velho) velho.remove(); caixa.id = 'caixa_enc'; b.after(caixa);
-        caixa.querySelector('#rel_n').onclick = () => caixa.remove();                       // "Não": fica na tela
+        caixa.querySelector('#rel_n').onclick = () => caixa.remove();                       // "Cancelar": fica na tela
         caixa.querySelector('#rel_s').onclick = () => { const a = S.v.acesso; S.v = null; descartarRascunho();
           relatar({codigo: a.codigo, ct: dois(+so(c.ct)), titulo: `Relatar modificação — CT ${dois(+so(c.ct))} (encerrado)`}); };
+        caixa.querySelector('#ret_s').onclick = () => { const a = S.v.acesso; S.v = null; descartarRascunho();   // ex.: buscar documento pendente
+          agendarRetorno({codigo: a.codigo, ct: dois(+so(c.ct)), titulo: `Agendar retorno — CT ${dois(+so(c.ct))} (encerrado)`}); };
         return;
       }
       S.v.r.ct_name = c.name; S.v.r.ct = String(c.ct).padStart(2, '0'); S.v.r.tentativa = String(c.proxima);
@@ -1030,6 +1187,13 @@ function passo() {
   if (nome === 'aviso') return escolha('aviso', 'Deixou aviso/adesivo com telefone?', ['Sim', 'Não']);
   if (nome === 'foto_aviso') return foto('foto_aviso', 'Foto do aviso deixado');
   if (nome === 'vizinho') return texto('vizinho', 'Informação de vizinho (melhor dia e horário para encontrar)', {naoInf: 'Nenhum vizinho soube informar'});
+  if (nome === 'retorno') return escolha('retorno', 'Combinou um retorno?', ['Não', 'Sim'], {dica: 'Ex.: o vizinho disse que o morador está em casa sábado de manhã.'});
+  if (nome === 'retorno_quando') {
+    const d = el(`<div>${campoRetorno(r.retorno_data, r.retorno_periodo)}</div>`);
+    moldura('Quando é o retorno?', d, {dica: 'Dia e período combinados. A equipe toda vê no "Meu dia" e no mapa.',
+      valido: () => { const e = lerRetorno(d); if (typeof e === 'string') return e; r.retorno_data = e.data; r.retorno_periodo = e.periodo; return true; }});
+    return ligarRetorno(d);
+  }
   if (nome === 'fotos_acesso') return foto('foto_acesso', 'Fotos do ACESSO', {min: 2, dica: 'No mínimo 2 fotos do acesso. Cada foto sai com data, hora e coordenadas.'});
   if (nome === 'obs') return texto('obs', 'OBSERVAÇÕES DA VISITA', {multilinha: true, min: 10, dica: 'O que aconteceu, com quem falou, retorno combinado…'});
   if (nome === 'pendente') return escolha('pendente', 'Ficou algo pendente para depois?', ['Sim', 'Não']);
@@ -1055,7 +1219,7 @@ function revisao() {
 }
 
 async function salvar() {
-  const r = S.v.r, a = S.v.acesso, st = r.status;
+  const r = S.v.r, a = S.v.acesso, st = r.status, temRet = PASSOS().includes('retorno_quando');   // retorno só vale se a tela dele está no caminho
   const visita = {id_envio: S.v.id, versao_app: VERSAO_APP, aparelho: S.aparelho, inicio: S.v.inicio, fim: new Date().toISOString(),
     gps_lat: S.gps ? S.gps.lat : '', gps_lon: S.gps ? S.gps.lon : '', gps_precisao_m: S.gps ? S.gps.prec : '', distancia_m: S.v.dist ?? '',
     justificativa_distancia: r.just_dist || '', 'Código': a.codigo, 'CT Nº': r.ct, 'Tentativa nº': r.tentativa + 'ª', novo_imovel: r.novo ? 'sim' : 'não',
@@ -1069,7 +1233,8 @@ async function salvar() {
     ...Object.fromEntries(Object.entries(COL).map(([k, c]) => [c, r[k] || ''])), 'Qual é a alternativa de acesso?': r.alternativa || '',
     'Observações da visita': r.obs, 'O cadastro será atualizado depois? Há algo pendente?': r.pendente || '',
     'O que está pendente? (documento, informação, retorno do morador…)': r.pendente_o_que || '',
-    motivo_sem_assinatura: ninguem(r) ? NINGUEM_ASSINA : r.assinatura_svg_nao ? (r.sem_assinatura || '') : '', 'Local e data': localData(a.municipio, new Date(S.v.inicio))};
+    motivo_sem_assinatura: ninguem(r) ? NINGUEM_ASSINA : r.assinatura_svg_nao ? (r.sem_assinatura || '') : '', 'Local e data': localData(a.municipio, new Date(S.v.inicio)),
+    'Retorno combinado (data)': temRet ? dataBR(r.retorno_data) : '', 'Retorno combinado (período)': temRet ? r.retorno_periodo : ''};
   // parte 3: só grava o que está valendo (resposta de tela que deixou de existir ao voltar e trocar não entra)
   const v3 = id => { if (!ativa(id)) return ''; const x = r[id];
     return Array.isArray(x) ? x.join(', ') : (id.endsWith('_nasc') ? dataBR(x) : (x ?? '')); };
@@ -1077,7 +1242,7 @@ async function salvar() {
     'Dados pessoais (situação)': situacaoDados(r).sit,
     motivo_sem_documento: situacaoDados(r).recusou.length ? 'Não quis informar: ' + situacaoDados(r).recusou.join(', ') : '',
     'Renda familiar per capita': PF(r) ? (faixaPC(r) || v3('renda_pc_pergunta')) : '',
-    'Copiado de': r.copiar === COPIAR_SIM && r.copiado_de ? r.copiado_de : ''});
+    'Copiado de': (r.copiar === COPIAR_SIM || r.copia_cpf) && r.copiado_de ? r.copiado_de : ''});
   // socio registrada em TODA visita: resposta automática pelo status (ou a escolhida por quem aceitou), observação e assinatura
   const resp = socioResp(r);
   const motivoAuto = st === 'Recusa' ? 'Não respondeu — visita com recusa' : st !== ACEITOU ? `Não se aplica — visita ${st === 'Abandonado / ruína' ? 'Abandonado' : st}`
@@ -1102,7 +1267,8 @@ async function salvar() {
     const m = (await DB.get('minhas')) || [];
     m.push({id: S.v.id, codigo: a.codigo, ct: r.ct, data: visita['Data da visita'], hora: visita['Hora de início da visita'], tentativa: visita['Tentativa nº'], tecnico: S.tecnico,
             status: visita['Status da aplicação da ficha'],
-            aband: visita['O imóvel está abandonado/ruína?'], titular: visita['Nome completo'] || visita['Razão social'] || ''});
+            aband: visita['O imóvel está abandonado/ruína?'], titular: visita['Nome completo'] || visita['Razão social'] || '',
+            retorno: temRet ? {data: visita['Retorno combinado (data)'], periodo: r.retorno_periodo, obs: visita['Informação de vizinho (melhor dia e horário para encontrar)']} : null});
     await DB.set('minhas', m.slice(-1000));
   }
   if (st === ACEITOU) {                // histórico do celular (sem fotos) → "copiar cadastro" funciona até sem internet
