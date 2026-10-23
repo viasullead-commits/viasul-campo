@@ -43,7 +43,14 @@ textarea{min-height:140px}
 body.commenu main{padding-bottom:84px}
 .item{display:block;width:100%;text-align:left;padding:12px;margin:6px 0;border:1px solid #d5dbe5;border-radius:10px;background:#fff;font-size:15px}
 .pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;font-weight:600;background:#e4e8f0}
-.pill.ok{background:#d5f0df;color:#14532d}.pill.pend{background:#fff1c2;color:#7a5b00}.pill.and{background:#dbe7fb;color:#1f3864}
+.pill.ok{background:#d5f0df;color:#14532d}.pill.pend{background:#fff1c2;color:#7a5b00}.pill.and{background:#dbe7fb;color:#1f3864}.pill.rev{background:#ffe0cc;color:#8a3200}.pill.novo{background:#fff;color:#1d2433;border:1px solid #9aa7bd}
+.legenda{background:rgba(255,255,255,.94);padding:4px 10px;border-radius:8px;font-size:14px;line-height:2.1;box-shadow:0 1px 4px rgba(0,0,0,.3)}
+.legenda label{display:block;cursor:pointer;white-space:nowrap}.legenda input{width:17px;height:17px;margin:0 6px 0 0;vertical-align:-3px}
+.legenda i{display:inline-block;width:12px;height:12px;border-radius:50%;border:2px solid #1d2433;margin-right:6px;vertical-align:-2px}
+.topo-ficha{display:flex;justify-content:space-between;align-items:center;margin:-4px 0 6px;color:#5b6475;font-size:13px}
+.topo-ficha button{border:1px solid #e5b4ae;background:#fdf1ef;color:var(--verm);border-radius:8px;padding:7px 12px;font-size:14px;font-weight:600}
+.leg-bt{display:block;width:100%;margin:5px 0 2px;padding:7px 10px;border:0;border-radius:6px;background:#e8590c;color:#fff;font-weight:700;font-size:13px}
+.mk-rev{background:#e8590c;border:2px solid #1d2433;border-radius:50%;color:#fff;font:700 11px/24px system-ui,sans-serif;text-align:center;letter-spacing:-.3px}
 .prog{height:6px;background:#e4e8f0;border-radius:3px;margin-bottom:12px}.prog div{height:6px;background:var(--az2);border-radius:3px}
 .tag{display:inline-block;padding:2px 8px;border-radius:12px;background:#e4e8f0;font-size:13px;margin-right:4px}
 .toast{position:fixed;left:12px;right:12px;bottom:16px;z-index:9999;max-width:620px;margin:0 auto;padding:14px;border-radius:10px;background:#1d2433;color:#fff;font-size:16px;box-shadow:0 4px 18px rgba(0,0,0,.25)}
@@ -58,7 +65,7 @@ body.commenu main{padding-bottom:84px}
 <script>
 'use strict';
 const SERVIDOR = 'https://script.google.com/macros/s/AKfycbz-lzDXOHPw396P5CxXM3u2Uuu_tyFspxY5d39bw-EZ7xwku3MAgVlIVwqFO8ubZh-0QA/exec';
-const VERSAO_APP = '2026-10-22.20';
+const VERSAO_APP = '2026-10-22.24';
 const RAIO_LISTA_M = 250;           // acessos mais perto que isso aparecem na lista
 const AVISO_DIST_M = 300, JUST_DIST_M = 500;
 
@@ -292,9 +299,10 @@ function opcoesVisita(v, st, pendente) {
 
 async function telaInicio() {
   menu('mapa');
-  const fila = await DB.filaTodos();
+  const fila = await DB.filaTodos(), sit = await situacaoAcessos();
   $('#hdr').textContent = `${nomeColab(S.tecnico)} · ${fila.length} p/ enviar`;
-  $('#tela').innerHTML = `${botaoInstalar()}<div id="mapa"></div>
+  $('#tela').innerHTML = `${botaoInstalar()}<input id="busca_ac" type="search" placeholder="🔍 Buscar acesso pelo código" autocomplete="off" style="margin-bottom:8px">
+    <div id="res_ac" class="lista"></div><div id="mapa"></div>
     <div id="perto" class="lista"></div>
     <button class="btn sec" id="sinc">Enviar visitas salvas (${fila.length}) e atualizar acessos</button>
     <p class="dica">Acessos atualizados em ${S.dados ? new Date(S.dados.baixado_em).toLocaleString('pt-BR') : '—'} · app ${VERSAO_APP}</p>
@@ -311,22 +319,61 @@ async function telaInicio() {
   (fundo[escolhido] || fundo['Satélite']).addTo(m);
   L.control.layers(fundo, null, {position: 'topright', collapsed: false}).addTo(m);
   m.on('baselayerchange', e => DB.set('fundo_mapa', e.name));
-  const camada = L.layerGroup().addTo(m);
-  S.dados.acessos.forEach(a => { const mk = L.circleMarker([+a.lat, +a.lon], {radius: 7, color: '#1d2433', weight: 2, fillColor: '#f4d03f', fillOpacity: .95})   // amarelo: aparece no satélite
-    .bindTooltip(a.codigo).on('click', () => escolherAcesso(a)); mk.addTo(camada); });
-  let eu = null, centrou = false;
+  // uma camada por situação; a legenda liga/desliga cada uma (a escolha fica guardada no celular)
+  const ocultos = new Set((await DB.get('tipos_ocultos')) || []), visivel = a => !ocultos.has(sit[a.name].tipo);
+  const grupos = {revisita: L.layerGroup(), novo: L.layerGroup(), encerrado: L.layerGroup()}, tot = {revisita: 0, novo: 0, encerrado: 0};
+  S.dados.acessos.forEach(a => { const s = sit[a.name], tipo = s.tipo; tot[tipo]++;
+    const mk = tipo === 'revisita'   // laranja com a visita que falta escrita dentro (2ª, 3ª ou 2/3)
+      ? L.marker([+a.lat, +a.lon], {icon: L.divIcon({className: 'mk-rev', html: rotuloRev(s), iconSize: [28, 28]})})
+      : L.circleMarker([+a.lat, +a.lon], {radius: tipo === 'encerrado' ? 5 : 8, color: '#1d2433', weight: 2, fillColor: COR_SIT[tipo].cor, fillOpacity: .95});
+    mk.bindTooltip(`${esc(a.codigo)} — ${esc(textoSit(s))}`).on('click', () => escolherAcesso(a)).addTo(grupos[tipo]); });
+  const ordem = () => grupos.encerrado.eachLayer(l => l.bringToBack());   // novos por cima dos encerrados (revisitas já ficam acima de tudo)
+  Object.entries(grupos).forEach(([t, g]) => { if (!ocultos.has(t)) g.addTo(m); }); ordem();
+  const SO_REV = ['novo', 'encerrado'], soRev = () => ocultos.size === 2 && SO_REV.every(t => ocultos.has(t));
+  const leg = L.control({position: 'bottomleft'});
+  leg.onAdd = () => { const d = el(`<div class="legenda"><button class="leg-bt" id="so_rev">${soRev() ? 'Mostrar todos' : 'Só revisitas'}</button>${['revisita', 'novo', 'encerrado'].map(t =>
+      `<label><input type="checkbox" data-t="${t}" ${ocultos.has(t) ? '' : 'checked'}><i style="background:${COR_SIT[t].cor}"></i>${COR_SIT[t].nome} (${tot[t]})</label>`).join('')}</div>`);
+    L.DomEvent.disableClickPropagation(d); L.DomEvent.disableScrollPropagation(d);
+    const aplica = () => {
+      Object.entries(grupos).forEach(([t, g]) => { const on = !ocultos.has(t); d.querySelector(`[data-t="${t}"]`).checked = on;
+        if (on && !m.hasLayer(g)) g.addTo(m); if (!on && m.hasLayer(g)) m.removeLayer(g); });
+      ordem(); d.querySelector('#so_rev').textContent = soRev() ? 'Mostrar todos' : 'Só revisitas';
+      DB.set('tipos_ocultos', [...ocultos]); window.atualizaMapa(); };
+    d.querySelectorAll('input').forEach(cb => cb.onchange = () => { cb.checked ? ocultos.delete(cb.dataset.t) : ocultos.add(cb.dataset.t); aplica(); });
+    d.querySelector('#so_rev').onclick = () => { const voltar = soRev(); ocultos.clear(); if (!voltar) SO_REV.forEach(t => ocultos.add(t)); aplica(); };
+    return d; };
+  leg.addTo(m);
+  let eu = null, centrou = false, alvo = null;
+  // busca pelo código (ou município): toca no resultado → o mapa vai até o acesso e marca com um anel azul
+  const normCod = s => String(s || '').toLowerCase().normalize('NFD').replace(/[^0-9a-z]/g, '');
+  $('#busca_ac').oninput = () => {
+    const t = normCod($('#busca_ac').value), res = $('#res_ac'); res.innerHTML = '';
+    if (!t) { if (alvo) { m.removeLayer(alvo); alvo = null; } return; }
+    const achou = S.dados.acessos.filter(a => normCod(a.codigo).includes(t) || normCod(a.municipio).includes(t));
+    if (!achou.length) return res.appendChild(el('<div class="dica">Nenhum acesso encontrado.</div>'));
+    achou.slice(0, 6).forEach(a => { const c = COR_SIT[sit[a.name].tipo];
+      const b = el(`<button>${esc(a.codigo)} <span class="pill ${c.pill}">${c.nome}</span><br><small>${esc(a.municipio)} · km ${esc(a.km)} ${esc(a.sentido)}</small></button>`);
+      b.onclick = () => { if (alvo) m.removeLayer(alvo);
+        alvo = L.circleMarker([+a.lat, +a.lon], {radius: 17, color: '#1a73e8', weight: 4, fillOpacity: 0})   // clicável mesmo se o tipo estiver escondido
+          .bindTooltip(esc(a.codigo), {permanent: true, direction: 'top', offset: [0, -16]}).on('click', () => escolherAcesso(a)).addTo(m);
+        centrou = true; m.setView([+a.lat, +a.lon], 17); res.innerHTML = ''; $('#busca_ac').blur(); };
+      res.appendChild(b); });
+    if (achou.length > 6) res.appendChild(el(`<div class="dica">… e mais ${achou.length - 6}. Continue digitando.</div>`));
+  };
   window.atualizaMapa = () => {
     if (!$('#perto')) return;           // GPS mexeu durante a visita: o mapa não está na tela
     if (!S.gps) { $('#perto').innerHTML = '<div class="aviso">Aguardando o GPS… (ative a localização)</div>'; return; }
     if (!eu) eu = L.circleMarker([S.gps.lat, S.gps.lon], {radius: 9, color: '#fff', weight: 3, fillColor: '#1a73e8', fillOpacity: 1}).addTo(m);
     eu.setLatLng([S.gps.lat, S.gps.lon]);
     if (!centrou) { m.setView([S.gps.lat, S.gps.lon], 17); centrou = true; }
-    const perto = S.dados.acessos.map(a => ({a, d: distM(S.gps.lat, S.gps.lon, +a.lat, +a.lon)})).sort((x, y) => x.d - y.d);
+    const perto = S.dados.acessos.filter(visivel).map(a => ({a, d: distM(S.gps.lat, S.gps.lon, +a.lat, +a.lon)})).sort((x, y) => x.d - y.d);
     const lista = perto.filter(x => x.d <= RAIO_LISTA_M).slice(0, 8);
     const mais = perto[0];
-    if (!mais) { $('#perto').innerHTML = '<div class="aviso">Nenhum acesso no celular — toque em "Enviar visitas salvas e atualizar acessos" com internet.</div>'; return; }
+    if (!mais) { $('#perto').innerHTML = S.dados.acessos.length ? '<div class="aviso">Todos os tipos de acesso estão escondidos — marque na legenda do mapa.</div>'
+      : '<div class="aviso">Nenhum acesso no celular — toque em "Enviar visitas salvas e atualizar acessos" com internet.</div>'; return; }
     $('#perto').innerHTML = `<div class="dica">GPS ±${S.gps.prec} m · acesso mais perto: <b>${esc(mais.a.codigo)}</b> (${Math.round(mais.d)} m)</div>`;
-    (lista.length ? lista : [mais]).forEach(x => { const b = el(`<button>${esc(x.a.codigo)} <span class="tag">${Math.round(x.d)} m</span><br><small>${esc(x.a.municipio)} · km ${esc(x.a.km)} ${esc(x.a.sentido)}</small></button>`);
+    (lista.length ? lista : [mais]).forEach(x => { const s = sit[x.a.name], c = COR_SIT[s.tipo];
+      const b = el(`<button>${esc(x.a.codigo)} <span class="tag">${Math.round(x.d)} m</span> <span class="pill ${c.pill}">${c.nome}</span><br><small>${esc(x.a.municipio)} · km ${esc(x.a.km)} ${esc(x.a.sentido)}<br>${esc(textoSit(s))}</small></button>`);
       b.onclick = () => escolherAcesso(x.a, x.d); $('#perto').appendChild(b); });
   };
   window.atualizaMapa();
@@ -403,14 +450,25 @@ function PASSOS() {                    // lista de telas conforme as respostas (
   return p;
 }
 
+async function apagarFicha() {        // descarta a visita em andamento (respostas + fotos) e volta para o mapa
+  if (!confirm('Deseja apagar tudo o que preencheu até aqui?\n\nAs respostas e as fotos desta visita serão apagadas. Não dá para desfazer.')) return;
+  const {acesso, r} = S.v;
+  S.v = null; await descartarRascunho();
+  if (r.ct && navigator.onLine)         // solta o CT reservado na hora (senão a reserva só expira em 90 min)
+    api({acao: 'liberar', token: S.token, codigo: acesso.codigo, ct: r.ct, aparelho: S.aparelho}, 15000).catch(() => {});
+  aviso('Ficha apagada.', 'ok');
+  telaInicio();
+}
 function moldura(titulo, corpo, {dica = '', valido = () => true} = {}) {
   esconderMenu();                      // durante a visita o menu de baixo some
   const ps = PASSOS(), i = S.v.passo;
   $('#hdr').textContent = `${S.v.acesso.codigo}${S.v.r.ct ? ' · CT ' + S.v.r.ct : ''}`;
   $('#tela').innerHTML = `<div class="prog"><div style="width:${Math.round(100 * (i + 1) / ps.length)}%"></div></div>
+    <div class="topo-ficha"><span>Tela ${i + 1} de ${ps.length}</span><button id="apagar_tudo">🗑 Apagar tudo</button></div>
     <h2>${titulo}</h2>${dica ? `<p class="dica">${dica}</p>` : ''}<div id="corpo"></div><div class="erro" id="err"></div>
     <div class="barra"><button class="btn sec" id="volta">Voltar</button><button class="btn" id="seg">Próximo</button></div>`;
   if (typeof corpo === 'string') $('#corpo').innerHTML = corpo; else $('#corpo').appendChild(corpo);
+  $('#apagar_tudo').onclick = apagarFicha;
   $('#volta').onclick = async () => { if (S.v.passo === 0) { if (!confirm('Sair desta visita sem salvar?')) return; S.v = null; await descartarRascunho(); return telaInicio(); }
     S.v.passo--; passo(); };
   $('#seg').onclick = () => { const e = valido(); if (e !== true) { $('#err').textContent = e; return; } S.v.passo++; passo(); };
@@ -820,32 +878,64 @@ const localData = (mun, d = new Date()) => `${mun}/RS, ${d.getDate()} de ${MESES
 
 // CTs do acesso = base (Geo) + visitas feitas pelo app (servidor) + as deste celular (inclusive as que ainda não subiram)
 // encerra quando: Concluído, Recusa, Abandonado ou 3ª ausência ("Ausência total"); senão segue em aberto
+const MAX_VISITAS = 3;                 // regra do contrato: no máximo 3 visitas por CT
 const nomeAcesso = cod => String(cod).replace(/[^0-9A-Za-z]+/g, '_').replace(/^_|_$/g, '');
 const isoData = d => /^\d{2}\/\d{2}\/\d{4}$/.test(d) ? d.split('/').reverse().join('-') : String(d || '');
-async function ctsDoAcesso(a) {
+async function visitasConhecidas() {   // servidor + deste celular (inclusive as que ainda não subiram), sem repetir
   const minhas = (await DB.get('minhas')) || [], vistos = new Set();
-  const vis = [...(S.dados.visitas || []), ...minhas].filter(v => nomeAcesso(v.codigo) === a.name && !vistos.has(v.id) && vistos.add(v.id))
-    .sort((x, y) => (isoData(x.data) + x.id).localeCompare(isoData(y.data) + y.id));
-  const lista = S.dados.cts.filter(c => c.acesso === a.name && !String(c.name).endsWith('__NOVO')).map(c => ({...c, ct: dois(+so(c.ct)), app: []}));
-  for (const v of vis) { const ct = dois(+so(v.ct) || 1); let c = lista.find(x => x.ct === ct);
-    if (!c) { c = {name: `${a.name}__${ct}`, acesso: a.name, ct, visitas: 0, encerrado: 0, desfecho: '', titular: '', app: []}; lista.push(c); }
-    c.app.push(v); }
-  for (const c of lista) {
-    if (!c.app.length) continue;
-    let n = +c.visitas || 0, enc = String(c.encerrado) === '1', aus = enc ? 0 : n, ult;   // base "em aberto" = só ausências até aqui
-    for (const v of c.app) { n++; ult = v; const st = v.aband === 'Sim' ? 'Abandonado' : v.status;
-      if (v.titular) c.titular = v.titular;
-      if (st === 'Ausente') aus++;
-      if (!enc && ['Concluído', 'Recusa', 'Abandonado'].includes(st)) { enc = true; c.desfecho = st; }
-      else if (!enc && aus >= 3) { enc = true; c.desfecho = 'Ausência total'; } }
-    const stUlt = ult.aband === 'Sim' ? 'Abandonado' : ult.status;
-    Object.assign(c, {visitas: n, proxima: Math.min(n + 1, 9), encerrado: enc ? 1 : 0,
-      label: `CT ${c.ct} — ${n} visita(s), última ${String(ult.data).slice(0, 5)} ${stUlt}` + (c.titular ? ` — ${c.titular}` : '') + (enc ? ` — ENCERRADO (${c.desfecho})` : '')}); }
-  lista.sort((x, y) => x.ct.localeCompare(y.ct));
+  return [...(S.dados.visitas || []), ...minhas].filter(v => !vistos.has(v.id) && vistos.add(v.id));
+}
+async function ctsDoAcesso(a) {
+  const lista = calcCTs(a, S.dados.cts.filter(c => c.acesso === a.name), (await visitasConhecidas()).filter(v => nomeAcesso(v.codigo) === a.name));
   const prox = dois(Math.max(0, ...lista.map(c => +c.ct)) + 1);
   lista.push({name: `${a.name}__NOVO`, label: `Imóvel NOVO neste acesso (vira CT ${prox}, 1ª visita)`, acesso: a.name, ct: prox, visitas: 0, proxima: 1, encerrado: 0});
   return lista;
 }
+function calcCTs(a, base, vis) {       // base = linhas da aba CTs deste acesso; vis = visitas conhecidas deste acesso
+  vis = vis.slice().sort((x, y) => (isoData(x.data) + x.id).localeCompare(isoData(y.data) + y.id));
+  const lista = base.filter(c => !String(c.name).endsWith('__NOVO')).map(c => ({...c, ct: dois(+so(c.ct)), app: []}));
+  for (const v of vis) { const ct = dois(+so(v.ct) || 1); let c = lista.find(x => x.ct === ct);
+    if (!c) { c = {name: `${a.name}__${ct}`, acesso: a.name, ct, visitas: 0, encerrado: 0, desfecho: '', titular: '', app: []}; lista.push(c); }
+    c.app.push(v); }
+  for (const c of lista) {
+    let n = +c.visitas || 0, enc = String(c.encerrado) === '1', ult = null;   // CT em aberto = até aqui só ausências
+    if (!c.app.length) {                 // só visitas da base (Geo): o limite vale também
+      if (!enc && n >= MAX_VISITAS) Object.assign(c, {encerrado: 1, desfecho: 'Ausência total', label: `${c.label || 'CT ' + c.ct} — ENCERRADO (Ausência total)`});
+      continue;
+    }
+    for (const v of c.app) { n++; ult = v; const st = v.aband === 'Sim' ? 'Abandonado' : v.status;
+      if (v.titular) c.titular = v.titular;
+      if (!enc && ['Concluído', 'Recusa', 'Abandonado'].includes(st)) { enc = true; c.desfecho = st; }
+      else if (!enc && n >= MAX_VISITAS) { enc = true; c.desfecho = 'Ausência total'; } }
+    // histórico do CT: data, resultado e quem fez cada visita do app (as da base Geo só têm a contagem)
+    const base = +c.visitas || 0, hist = c.app.map(v => `${String(v.data).slice(0, 5)} ${v.aband === 'Sim' ? 'Abandonado' : v.status}${v.tecnico ? ' (' + v.tecnico + ')' : ''}`);
+    Object.assign(c, {visitas: n, proxima: n + 1, encerrado: enc ? 1 : 0, ult: {data: ult.data, tecnico: ult.tecnico || ''},
+      label: `CT ${c.ct} — ${n} visita(s)${base ? ` (${base} antes do app)` : ''}: ${hist.join(' · ')}` + (c.titular ? ` — ${c.titular}` : '') + (enc ? ` — ENCERRADO (${c.desfecho})` : '')}); }
+  lista.sort((x, y) => x.ct.localeCompare(y.ct));
+  return lista;
+}
+
+// cor de cada acesso no mapa: revisita (CT aberto com visita) > novo (CT sem visita ou acesso sem CT) > encerrado (todos os CTs fechados)
+const COR_SIT = {revisita: {cor: '#e8590c', nome: 'Revisita', pill: 'rev'}, novo: {cor: '#ffffff', nome: 'Novo', pill: 'novo'},
+                 encerrado: {cor: '#27ae60', nome: 'Encerrado', pill: 'ok'}};
+async function situacaoAcessos() {     // nome do acesso → {revisita, novos, encerrados, tipo}
+  const agrupa = (lista, chave) => lista.reduce((m, x) => { const k = chave(x); (m[k] = m[k] || []).push(x); return m; }, {});
+  const cts = agrupa(S.dados.cts, c => c.acesso), vis = agrupa(await visitasConhecidas(), v => nomeAcesso(v.codigo)), out = {};
+  for (const a of S.dados.acessos) {
+    const s = {revisita: 0, novos: 0, encerrados: 0, p2: 0, p3: 0};   // p2/p3 = CTs abertos que precisam da 2ª / 3ª visita
+    calcCTs(a, cts[a.name] || [], vis[a.name] || []).forEach(c => {
+      if (c.ult && (!s.ult || isoData(c.ult.data) >= isoData(s.ult.data))) s.ult = c.ult;   // visita mais recente do acesso
+      if (String(c.encerrado) === '1') s.encerrados++;
+      else if (+c.visitas > 0) { s.revisita++; +c.visitas >= 2 ? s.p3++ : s.p2++; }
+      else s.novos++; });
+    s.tipo = s.revisita ? 'revisita' : (s.novos || !s.encerrados) ? 'novo' : 'encerrado';
+    out[a.name] = s;
+  }
+  return out;
+}
+const textoSit = s => [s.p2 && `${s.p2} CT p/ 2ª visita`, s.p3 && `${s.p3} CT p/ 3ª visita`, s.novos && `${s.novos} CT sem visita`, s.encerrados && `${s.encerrados} CT encerrado(s)`]
+  .filter(Boolean).join(' · ') + (s.ult ? ` · última: ${String(s.ult.data).slice(0, 5)}${s.ult.tecnico ? ' por ' + s.ult.tecnico : ''}` : '') || 'nenhuma visita ainda';
+const rotuloRev = s => s.p2 && s.p3 ? '2/3' : s.p3 ? '3ª' : '2ª';   // o que vai escrito no ponto laranja
 
 async function telaCT() {
   const a = S.v.acesso, cts = await ctsDoAcesso(a);
