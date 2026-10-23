@@ -65,7 +65,7 @@ body.commenu main{padding-bottom:84px}
 <script>
 'use strict';
 const SERVIDOR = 'https://script.google.com/macros/s/AKfycbz-lzDXOHPw396P5CxXM3u2Uuu_tyFspxY5d39bw-EZ7xwku3MAgVlIVwqFO8ubZh-0QA/exec';
-const VERSAO_APP = '2026-10-22.24';
+const VERSAO_APP = '2026-10-22.25';
 const RAIO_LISTA_M = 250;           // acessos mais perto que isso aparecem na lista
 const AVISO_DIST_M = 300, JUST_DIST_M = 500;
 
@@ -379,6 +379,8 @@ async function telaInicio() {
   window.atualizaMapa();
 }
 
+// depois de enviar/atualizar: redesenha só o Mapa ou o Meu dia (nunca tira a pessoa de uma visita, relato ou login)
+const redesenha = () => { if ($('#mapa')) telaInicio(); else if ($('#lista_dia')) telaDia(); };
 let sincronizando = false, reTentativa = null;
 async function sincronizar(manual = true) {   // envia a fila (só apaga do celular depois do "ok" do servidor) e atualiza os acessos
   if (sincronizando) return manual && aviso('Já estou enviando…');
@@ -399,10 +401,10 @@ async function sincronizar(manual = true) {   // envia a fila (só apaga do celu
     // servidor ocupado / sinal caiu no meio: tenta de novo sozinho em 20–40 s (não espera os 5 min)
     if (erro && !reTentativa) reTentativa = setTimeout(() => { reTentativa = null; if (navigator.onLine) sincronizar(false); }, 20000 + Math.random() * 20000);
     if (ok || erro || manual) aviso(`${ok} visita(s) enviada(s).` + (erro ? `\nFicou no celular: ${erro}` : ''), erro ? 'erro' : 'ok');
-    if (!S.v) telaInicio();
+    redesenha();
     if (!erro) {
       try { const r = await pega(`${SERVIDOR}?acao=dados&token=${encodeURIComponent(S.token)}`);
-        if (r.ok) { S.dados = {acessos: r.acessos, cts: r.cts, visitas: r.visitas || [], baixado_em: new Date().toISOString()}; await DB.set('dados', S.dados); if (!S.v) telaInicio(); } }
+        if (r.ok) { S.dados = {acessos: r.acessos, cts: r.cts, visitas: r.visitas || [], baixado_em: new Date().toISOString()}; await DB.set('dados', S.dados); redesenha(); } }
       catch (e) { if (manual) aviso('Não consegui atualizar a lista de acessos agora (uso a que já está no celular).', 'erro'); }
     }
   } finally { sincronizando = false; }
@@ -588,7 +590,10 @@ function isoDeBR(v) {
   return (dt.getFullYear() === +aa && dt.getMonth() === +mm - 1 && dt.getDate() === +dd) ? `${aa}-${mm}-${dd}` : null;   // barra 31/02 etc.
 }
 const mascaraData = s => { const d = so(s).slice(0, 8); return d.length > 4 ? `${d.slice(0, 2)}/${d.slice(2, 4)}/${d.slice(4)}` : d.length > 2 ? `${d.slice(0, 2)}/${d.slice(2)}` : d; };
-const num = v => { let s = String(v ?? '').trim(); if (!s) return NaN; if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.'); return Number(s); };
+const num = v => { let s = String(v ?? '').trim(); if (!s) return NaN;
+  if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.');
+  else if (/^\d{1,3}(\.\d{3})+$/.test(s)) s = s.replace(/\./g, '');   // "1.500" = mil e quinhentos (ponto de milhar), não 1,5
+  return Number(s); };
 const brl = n => n.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
 const SM2 = 3242;                      // 2 salários mínimos 2026
 function perCapita(r) { const t = num(r.total_pessoas), v = num(r.renda_total);
@@ -971,7 +976,8 @@ async function telaCT() {
         if (!r.ok && r.ocupado_por) {
           if (S.v.r.novo && r.sugestao_ct) { aviso(`${r.ocupado_por} está preenchendo o CT ${S.v.r.ct} agora. Este imóvel novo vai ser o CT ${r.sugestao_ct}.`, 'erro');
             S.v.r.ct = r.sugestao_ct; await api({acao: 'reservar', token: S.token, codigo: a.codigo, ct: S.v.r.ct, aparelho: S.aparelho, novo: true}, 15000); }
-          else { $('#err').textContent = `${r.ocupado_por} está preenchendo este CT agora. Combine com ele(a) ou escolha outro.`; return; }
+          else { $('#err').textContent = `${r.ocupado_por} está preenchendo este CT agora. Combine com ele(a) ou escolha outro.`;
+            $('#seg').disabled = false; $('#seg').textContent = 'Próximo'; return; }
         } } catch (e) { /* sem sinal: segue offline; a conferência é feita no envio */ }
     }
     seg();
