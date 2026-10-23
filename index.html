@@ -66,7 +66,7 @@ body.commenu main{padding-bottom:84px}
 <script>
 'use strict';
 const SERVIDOR = 'https://script.google.com/macros/s/AKfycbz-lzDXOHPw396P5CxXM3u2Uuu_tyFspxY5d39bw-EZ7xwku3MAgVlIVwqFO8ubZh-0QA/exec';
-const VERSAO_APP = '2026-10-22.31';
+const VERSAO_APP = '2026-10-23.32';
 const RAIO_LISTA_M = 250;           // acessos mais perto que isso aparecem na lista
 const AVISO_DIST_M = 300, JUST_DIST_M = 500;
 
@@ -185,7 +185,7 @@ function telaLogin(msg, escolhido) {
       $('#ent').textContent = 'Baixando os acessos…';
       const r = await (await fetch(`${SERVIDOR}?acao=dados&token=${encodeURIComponent(t)}`)).json();
       if (!r.ok) return telaLogin(r.erro || 'código inválido', quem);
-      S.token = t; S.tecnico = p.tecnico; S.dados = {acessos: r.acessos, cts: r.cts, visitas: r.visitas || [], baixado_em: new Date().toISOString()};
+      S.token = t; S.tecnico = p.tecnico; S.dados = {acessos: r.acessos, cts: r.cts, visitas: r.visitas || [], retornos: r.retornos || [], baixado_em: new Date().toISOString()};
       await DB.set('token', t); await DB.set('tecnico', p.tecnico); await DB.set('dados', S.dados);
       telaInicio();
     } catch (e) { telaLogin('Sem internet — tente de novo onde tiver sinal.', quem); }
@@ -245,7 +245,8 @@ async function relatar({codigo, ct, ref, titulo}) {
   };
 }
 
-// ---------------- retorno agendado: na visita (ausente) ou avulso (a pessoa ligou depois do aviso, pendência…); a equipe toda vê ----------------
+// ---------------- retorno agendado: na visita (ausente) ou avulso (a pessoa ligou depois do aviso, pendência…) ----------------
+// lembrete (Meu dia e mapa) = só os que ESTA pessoa agendou; os da equipe aparecem ao abrir/pesquisar o acesso, com o nome de quem agendou
 const PERIODOS = ['Manhã', 'Tarde', 'Qualquer horário'], RETORNO_MAX_DIAS = 90;
 const DIAS_SEM = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
 const diaSemana = iso => { const d = new Date(iso + 'T12:00'); return isNaN(d) ? iso : `${DIAS_SEM[d.getDay()]} ${dois(d.getDate())}/${dois(d.getMonth() + 1)}`; };
@@ -266,8 +267,12 @@ async function retornosConhecidos() {   // servidor (equipe toda) + deste celula
   const vistos = new Set(), minhas = (await DB.get('minhas')) || [], meus = (await DB.get('meus_retornos')) || [];
   const daVisita = minhas.filter(m => m.retorno).map(m => ({id: m.id, codigo: m.codigo, ct: m.ct, data: m.retorno.data, periodo: m.retorno.periodo,
     obs: m.retorno.obs || '', tecnico: m.tecnico, criado: m.data}));
-  return [...(S.dados.retornos || []), ...daVisita, ...meus].filter(x => x.id && !vistos.has(x.id) && vistos.add(x.id));
+  // do servidor: aceita o formato do app ou o das colunas da aba (Código / CT Nº / data_retorno…)
+  const doServidor = (S.dados.retornos || []).map(x => ({id: x.id || x.id_envio, codigo: x.codigo || x['Código'], ct: x.ct || x['CT Nº'],
+    data: x.data || x.data_retorno, periodo: x.periodo || '', obs: x.obs || '', tecnico: x.tecnico || '', criado: x.criado || x.criado_em || '', ref: x.ref || x.ref_visita || ''}));
+  return [...doServidor, ...daVisita, ...meus].filter(x => x.id && !vistos.has(x.id) && vistos.add(x.id));
 }
+const meuRetorno = x => x.tecnico === S.tecnico;   // lembrete só de quem agendou
 const chaveCT = (cod, ct) => nomeAcesso(cod) + '__' + dois(+so(ct) || 1);
 async function retornosMarcados() {     // cada retorno com a situação: hoje / agendado / feito / nao_feito (feito = visita ou relato no CT a partir do dia)
   const feitos = [...await visitasConhecidas(), ...((await DB.get('meus_relatos')) || [])], dia = hoje();
@@ -289,7 +294,7 @@ async function agendarRetorno({codigo, ct, ref, titulo} = {}) {
   let alvo = {codigo: codigo || '', ct: ct ? dois(+so(ct)) : ''};
   $('#hdr').textContent = codigo ? `${codigo}${ct ? ' · CT ' + alvo.ct : ''}` : 'Agendar retorno';
   $('#tela').innerHTML = `<h2>${esc(titulo || 'Agendar retorno')}</h2>
-    <p class="dica">Ex.: a pessoa viu o aviso e ligou, ou ficou um documento para buscar. A equipe toda vê no "Meu dia" e no mapa.</p>
+    <p class="dica">Ex.: a pessoa viu o aviso e ligou, ou ficou um documento para buscar. Aparece no seu "Meu dia" e no mapa; a equipe vê ao abrir o acesso.</p>
     ${codigo ? '' : '<input id="ret_ac" type="search" placeholder="🔍 Código do acesso" autocomplete="off"><div id="ret_res" class="lista"></div>'}
     <div id="ret_alvo"></div>
     <p class="dica" style="margin-top:12px"><b>Dia e período combinados</b></p>${campoRetorno()}
@@ -358,8 +363,8 @@ async function telaDia() {
     <div id="lista_dia"></div>`;
   if ($('#sinc')) $('#sinc').onclick = sincronizar;
   $('#agendar').onclick = () => agendarRetorno();
-  // retornos combinados da equipe toda: os de hoje em destaque + os próximos
-  const R0 = $('#ret_dia'), rHoje = rets.filter(x => x.sit === 'hoje'), rProx = rets.filter(x => x.sit === 'agendado');
+  // lembrete: só os retornos que ESTA pessoa agendou — os de hoje em destaque + os próximos
+  const meus = rets.filter(meuRetorno), R0 = $('#ret_dia'), rHoje = meus.filter(x => x.sit === 'hoje'), rProx = meus.filter(x => x.sit === 'agendado');
   if (rHoje.length) { R0.appendChild(el(`<div class="aviso" style="margin-top:8px"><b>📅 Retornos de hoje (${rHoje.length})</b> — toque para abrir o acesso</div>`)); rHoje.forEach(x => R0.appendChild(itemRetorno(x))); }
   if (rProx.length) { R0.appendChild(el(`<div style="margin:12px 0 4px;font-weight:700;color:#1f3864">Próximos retornos (${rProx.length})</div>`)); rProx.slice(0, 30).forEach(x => R0.appendChild(itemRetorno(x))); }
   // busca por código, data ou nome: filtra visitas, relatos e o histórico de retornos
@@ -389,9 +394,13 @@ async function telaDia() {
     const relF = rel.filter(casa);
     if (relF.length) { L0.appendChild(el('<h2 style="font-size:17px;margin-top:18px">Relatos de modificação</h2>'));
       relF.forEach(x => L0.appendChild(el(`<div class="item"><span class="pill ${pend.has(x.id) ? 'pend' : 'ok'}">${pend.has(x.id) ? 'aguardando envio' : 'enviado'}</span> <b>${esc(x.codigo)}</b> · CT ${esc(x.ct)} · ${esc(x.data)} ${esc(x.hora)}<br><small>${esc(x.texto)}</small></div>`))); }
-    const hist = rets.filter(x => ['feito', 'nao_feito'].includes(x.sit) && casa(x)).reverse();
-    if (hist.length) { L0.appendChild(el(`<h2 style="font-size:17px;margin-top:18px">Histórico de retornos (${hist.length})</h2>`));
-      hist.slice(0, f2 ? hist.length : 50).forEach(x => L0.appendChild(itemRetorno(x))); }
+    // sem busca: histórico dos MEUS retornos; com busca: retornos de toda a equipe nesse acesso (com quem agendou)
+    if (f2) { const achou = rets.filter(casa);
+      if (achou.length) { L0.appendChild(el(`<h2 style="font-size:17px;margin-top:18px">Retornos encontrados — equipe (${achou.length})</h2>`));
+        achou.forEach(x => L0.appendChild(itemRetorno(x))); } }
+    else { const hist = meus.filter(x => ['feito', 'nao_feito'].includes(x.sit)).reverse();
+      if (hist.length) { L0.appendChild(el(`<h2 style="font-size:17px;margin-top:18px">Histórico dos meus retornos (${hist.length})</h2>`));
+        hist.slice(0, 50).forEach(x => L0.appendChild(itemRetorno(x))); } }
   };
   $('#busca_dia').oninput = () => { filtroDia = $('#busca_dia').value; desenha(); };
   desenha();
@@ -439,8 +448,10 @@ async function telaInicio() {
     mk.bindTooltip(`${esc(a.codigo)} — ${esc(textoSit(s))}`).on('click', () => escolherAcesso(a)).addTo(grupos[tipo]); });
   const ordem = () => grupos.encerrado.eachLayer(l => l.bringToBack());   // novos por cima dos encerrados (revisitas já ficam acima de tudo)
   Object.entries(grupos).forEach(([t, g]) => { if (!ocultos.has(t)) g.addTo(m); }); ordem();
-  // retorno combinado p/ hoje: anel amarelo tracejado no acesso (aparece mesmo com o tipo escondido)
-  const retHoje = {}; (await retornosMarcados()).filter(x => x.sit === 'hoje').forEach(x => (retHoje[nomeAcesso(x.codigo)] = retHoje[nomeAcesso(x.codigo)] || []).push(x));
+  // retorno que ESTA pessoa combinou p/ hoje: anel amarelo tracejado no acesso (aparece mesmo com o tipo escondido)
+  const rets = await retornosMarcados(), retHoje = {};
+  rets.filter(x => x.sit === 'hoje' && meuRetorno(x)).forEach(x => (retHoje[nomeAcesso(x.codigo)] = retHoje[nomeAcesso(x.codigo)] || []).push(x));
+  const retAberto = {}; rets.filter(x => ['hoje', 'agendado'].includes(x.sit)).forEach(x => (retAberto[nomeAcesso(x.codigo)] = retAberto[nomeAcesso(x.codigo)] || []).push(x));   // equipe: só na busca
   S.dados.acessos.filter(a => retHoje[a.name]).forEach(a => L.circleMarker([+a.lat, +a.lon], {radius: 15, color: '#b7791f', weight: 3, dashArray: '4 4', fill: false, interactive: false})
     .bindTooltip(`📅 ${esc(a.codigo)} — retorno hoje`, {permanent: true, direction: 'top', offset: [0, -14], className: 'tt-ret'}).addTo(m));
   const SO_REV = ['novo', 'encerrado'], soRev = () => ocultos.size === 2 && SO_REV.every(t => ocultos.has(t));
@@ -466,7 +477,8 @@ async function telaInicio() {
     const achou = S.dados.acessos.filter(a => normCod(a.codigo).includes(t) || normCod(a.municipio).includes(t));
     if (!achou.length) return res.appendChild(el('<div class="dica">Nenhum acesso encontrado.</div>'));
     achou.slice(0, 6).forEach(a => { const c = COR_SIT[sit[a.name].tipo];
-      const b = el(`<button>${esc(a.codigo)} <span class="pill ${c.pill}">${c.nome}</span><br><small>${esc(a.municipio)} · km ${esc(a.km)} ${esc(a.sentido)}</small></button>`);
+      const ra = (retAberto[a.name] || []).map(x => `<br><span class="pill pend">📅 retorno ${esc(textoRetorno(x))} · CT ${esc(dois(+so(x.ct) || 1))}${x.tecnico ? ' · agendado por ' + esc(nomeColab(x.tecnico)) : ''}</span>`).join('');
+      const b = el(`<button>${esc(a.codigo)} <span class="pill ${c.pill}">${c.nome}</span><br><small>${esc(a.municipio)} · km ${esc(a.km)} ${esc(a.sentido)}</small>${ra}</button>`);
       b.onclick = () => { if (alvo) m.removeLayer(alvo);
         alvo = L.circleMarker([+a.lat, +a.lon], {radius: 17, color: '#1a73e8', weight: 4, fillOpacity: 0})   // clicável mesmo se o tipo estiver escondido
           .bindTooltip(esc(a.codigo), {permanent: true, direction: 'top', offset: [0, -16]}).on('click', () => escolherAcesso(a)).addTo(m);
@@ -520,7 +532,7 @@ async function sincronizar(manual = true) {   // envia a fila (só apaga do celu
     redesenha();
     if (!erro) {
       try { const r = await pega(`${SERVIDOR}?acao=dados&token=${encodeURIComponent(S.token)}`);
-        if (r.ok) { S.dados = {acessos: r.acessos, cts: r.cts, visitas: r.visitas || [], baixado_em: new Date().toISOString()}; await DB.set('dados', S.dados); redesenha(); } }
+        if (r.ok) { S.dados = {acessos: r.acessos, cts: r.cts, visitas: r.visitas || [], retornos: r.retornos || [], baixado_em: new Date().toISOString()}; await DB.set('dados', S.dados); redesenha(); } }
       catch (e) { if (manual) aviso('Não consegui atualizar a lista de acessos agora (uso a que já está no celular).', 'erro'); }
     }
   } finally { sincronizando = false; }
@@ -1190,7 +1202,7 @@ function passo() {
   if (nome === 'retorno') return escolha('retorno', 'Combinou um retorno?', ['Não', 'Sim'], {dica: 'Ex.: o vizinho disse que o morador está em casa sábado de manhã.'});
   if (nome === 'retorno_quando') {
     const d = el(`<div>${campoRetorno(r.retorno_data, r.retorno_periodo)}</div>`);
-    moldura('Quando é o retorno?', d, {dica: 'Dia e período combinados. A equipe toda vê no "Meu dia" e no mapa.',
+    moldura('Quando é o retorno?', d, {dica: 'Dia e período combinados. Aparece no seu "Meu dia" e no mapa; a equipe vê ao abrir o acesso.',
       valido: () => { const e = lerRetorno(d); if (typeof e === 'string') return e; r.retorno_data = e.data; r.retorno_periodo = e.periodo; return true; }});
     return ligarRetorno(d);
   }
