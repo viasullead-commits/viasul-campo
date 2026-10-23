@@ -65,7 +65,7 @@ body.commenu main{padding-bottom:84px}
 <script>
 'use strict';
 const SERVIDOR = 'https://script.google.com/macros/s/AKfycbz-lzDXOHPw396P5CxXM3u2Uuu_tyFspxY5d39bw-EZ7xwku3MAgVlIVwqFO8ubZh-0QA/exec';
-const VERSAO_APP = '2026-10-22.25';
+const VERSAO_APP = '2026-10-22.30';
 const RAIO_LISTA_M = 250;           // acessos mais perto que isso aparecem na lista
 const AVISO_DIST_M = 300, JUST_DIST_M = 500;
 
@@ -446,8 +446,9 @@ function PASSOS() {                    // lista de telas conforme as respostas (
   const vale = q => !q.quando || q.quando(r), iSocio = Q.findIndex(q => q.id === 'socio_aceitou');
   if (st === ACEITOU) { p.push('copiar'); if (r.copiar === COPIAR_SIM) p.push('copiar_busca'); p.push(...Q.slice(0, iSocio).filter(vale).map(q => q.id)); }
   p.push('obs', 'pendente'); if (r.pendente === 'Sim') p.push('pendente_o_que');
-  p.push('assinatura'); if (r.assinatura_svg_nao) p.push('sem_assinatura');
-  if (st === ACEITOU) p.push(...Q.slice(iSocio).filter(vale).map(q => q.id));
+  if (!ninguem(r)) { p.push('assinatura'); if (r.assinatura_svg_nao) p.push('sem_assinatura'); }   // ausente/abandono: ninguém p/ assinar
+  // socio: quem aceitou a entrevista responde tudo; nos outros status a resposta é automática, mas observação e assinatura aparecem
+  p.push(...Q.slice(iSocio).filter(q => st === ACEITOU || SOCIO_SEMPRE.includes(q.id)).filter(vale).map(q => q.id));
   p.push('revisao');
   return p;
 }
@@ -603,6 +604,16 @@ const SN = ['Sim', 'Não'], SN_INF = ['Sim', 'Não', 'Não soube informar', 'Rec
 const EST_CIVIL = ['Solteiro', 'Casado', 'União Estável', 'Divorciado', 'Viúvo', NAO_INF];
 const casado = e => e === 'Casado' || e === 'União Estável';
 const PF = r => r.pf_pj === 'Física', PJ = r => r.pf_pj === 'Jurídica', SO = r => PF(r) && r.socio_aceitou === 'Sim';
+// resposta da socio: automática pelo status (recusa → Não; ausente, abandono e PJ → Não se aplica); só quem aceitou a entrevista (PF) escolhe
+const socioResp = r => r.status === 'Recusa' ? 'Não'
+  : ['Ausente', 'Abandonado / ruína'].includes(r.status) || (r.status === ACEITOU && PJ(r)) ? 'Não se aplica' : r.socio_aceitou;
+const temSocio = r => !!socioResp(r);
+const ninguem = r => ['Ausente', 'Abandonado / ruína'].includes(r.status);   // sem ninguém no local: não há o que assinar
+const NINGUEM_ASSINA = 'Ninguém no local para assinar';
+const OBS_SOCIO_PADRAO = {Recusa: 'Recusou a entrevista — não respondeu o questionário socioeconômico.', Ausente: 'Não se aplica — ninguém no imóvel (ausente).',
+  'Abandonado / ruína': 'Não se aplica — imóvel abandonado/ruína.', PJ: 'Não se aplica — pessoa jurídica.', Sim: 'Sem observações',
+  'Não': 'Não aceitou responder o questionário socioeconômico.', 'Não se aplica (não reside no imóvel)': 'Não se aplica — não reside no imóvel.'};
+const obsSocioPadrao = r => r.status !== ACEITOU ? OBS_SOCIO_PADRAO[r.status] : PJ(r) ? OBS_SOCIO_PADRAO.PJ : OBS_SOCIO_PADRAO[r.socio_aceitou];
 const ANO = new Date().getFullYear();
 // cada dado pessoal tem o botão "Não quis informar"; no fim a situação (todos / parcial / nenhum) sai sozinha → situacaoDados()
 const NAO_QUIS = 'Não quis informar';
@@ -659,7 +670,8 @@ const Q = [
   {id: 'renda_pc_pergunta', tipo: 'escolha', titulo: 'Renda familiar POR PESSOA (renda total ÷ moradores; 2 salários = R$ 3.242)',
    quando: r => PF(r) && perCapita(r) == null && !!r.socio_aceitou && (r.socio_aceitou !== 'Sim' || (!!r.renda_inf && r.renda_inf !== 'Informou o valor')),
    op: ['Até 2 salários mínimos', 'Acima de 2 salários mínimos', 'Não soube informar', 'Recusou a informar']},
-  {id: 'despesas50', tipo: 'escolha', titulo: '01.04 As despesas essenciais (alimentação, moradia, água, energia, saúde e transporte) comprometem mais de 50% da renda familiar?',
+  {id: 'despesas50', tipo: 'escolha', titulo: r => { const t = num(r.renda_total), metade = r.renda_inf === 'Informou o valor' && t > 0 ? ` (R$ ${brl(t / 2)})` : '';
+     return `01.04 As despesas essenciais (alimentação, moradia, água, energia, saúde e transporte) comprometem mais de 50%${metade} da renda familiar?`; },
    op: ['Sim', 'Não', 'Não sabe informar'], quando: SO, dica: r => perCapita(r) == null ? '' : `Renda por pessoa: R$ ${brl(perCapita(r))} → ${faixaPC(r)}.`},
   {id: 'saude', tipo: 'escolha', titulo: '01.05 Realiza gastos mensais com tratamento de saúde ou medicamentos de uso contínuo?', op: SN, quando: SO},
   {id: 'saude_valor', tipo: 'dinheiro', titulo: 'Valor médio mensal com saúde (R$)', quando: r => SO(r) && r.saude === 'Sim', faixa: [0, 50000], naoInf: 'Não soube informar'},
@@ -669,7 +681,7 @@ const Q = [
   {id: 'veic_tipo', tipo: 'multi', titulo: 'Qual o tipo?', quando: r => SO(r) && r.veiculo === 'Sim',
    op: ['Carro', 'Moto', 'Caminhonete', 'Caminhão', 'Trator / máquina agrícola', 'Van / ônibus', 'Outro']},
   {id: 'veic_ano', tipo: 'int', titulo: 'Ano aproximado do veículo principal', quando: r => SO(r) && r.veiculo === 'Sim', faixa: [1950, ANO + 1],
-   msgFaixa: `Ano entre 1950 e ${ANO + 1} (não use 0).`},
+   msgFaixa: `Ano entre 1950 e ${ANO + 1} (não use 0).`, naoInf: 'Não soube informar'},
   {id: 'veic_trabalho', tipo: 'escolha', titulo: 'É utilizado como instrumento de trabalho?', op: SN, quando: r => SO(r) && r.veiculo === 'Sim'},
   {id: 'beneficio', tipo: 'escolha', titulo: '01.08 Recebe Bolsa Família, BPC ou outro benefício do governo?', op: SN, quando: SO},
   {id: 'benef_qual', tipo: 'multi', titulo: 'Qual benefício?', quando: r => SO(r) && r.beneficio === 'Sim',
@@ -694,13 +706,12 @@ const Q = [
    faixa: r => [1, num(r.total_pessoas)]},
   {id: 'qtd_cronica', tipo: 'int', titulo: 'Quantas pessoas com doença crônica ou grave?', quando: r => SO(r) && (r.marcadores || []).some(m => m.startsWith('Pessoa com doença')),
    faixa: r => [1, num(r.total_pessoas)]},
-  {id: 'socio_status', tipo: 'escolha', titulo: 'Status da ficha socioeconômica', op: ['Respondeu todas as perguntas', 'Respondeu parcialmente'], quando: SO},
   // observação da socio: sempre aparece depois do "aceitou?"; "Não" pula todas as perguntas e já traz o texto padrão (editável)
-  {id: 'socio_obs', tipo: 'texto', titulo: '03 OBSERVAÇÕES (socioeconômica)', multilinha: true, quando: r => PF(r) && !!r.socio_aceitou,
-   naoInf: r => r.socio_aceitou === 'Sim' ? 'Sem observações' : r.socio_aceitou === 'Não' ? 'Não aceitou responder o questionário socioeconômico.'
-     : 'Não se aplica — não reside no imóvel.'},
-  {id: 'assin_socio', tipo: 'assinatura', titulo: 'Assinatura do DECLARANTE (socioeconômica)', quando: SO},
-  {id: 'assin_socio_motivo', tipo: 'texto', titulo: 'Por que o declarante não assinou a socioeconômica?', quando: r => SO(r) && r.assin_socio_nao, naoInf: 'Recusou-se a assinar'},
+  // observação e assinatura da socio: em TODA visita (mesmo com a resposta automática "Não" / "Não se aplica")
+  {id: 'socio_obs', tipo: 'texto', titulo: '03 OBSERVAÇÕES (socioeconômica)', multilinha: true, quando: temSocio, naoInf: obsSocioPadrao},
+  {id: 'assin_socio', tipo: 'assinatura', titulo: 'Assinatura do DECLARANTE (socioeconômica)', quando: r => temSocio(r) && !ninguem(r)},
+  {id: 'assin_socio_motivo', tipo: 'texto', titulo: 'Por que o declarante não assinou a socioeconômica?', quando: r => temSocio(r) && !ninguem(r) && r.assin_socio_nao,
+   naoInf: 'Recusou-se a assinar'},
 ];
 const QI = Object.fromEntries(Q.map(q => [q.id, q]));
 
@@ -726,7 +737,16 @@ const COL_SOCIO = {socio_aceitou: 'Aceitou responder a ficha socioeconômica?',
   uso: 'O imóvel é utilizado para', falta: 'Falta água encanada, luz o dia todo ou rede de esgoto?', falta_o_que: 'O que falta?',
   escolaridade: 'Nível de escolaridade do principal responsável (financeiro) pelo domicílio', marcadores: 'A família possui algum dos seguintes marcadores sociais?',
   qtd_pcd: 'Quantas? — Pessoa com deficiência', qtd_cronica: 'Quantas? — Pessoa com doença crônica ou grave',
-  socio_status: 'Respondeu todas as perguntas / Respondeu parcialmente', socio_obs: 'Observações (socioeconômica)'};
+  socio_obs: 'Observações (socioeconômica)'};
+const COL_STATUS_SOCIO = 'Respondeu todas as perguntas / Respondeu parcialmente';
+// status da socio é automático: alguma pergunta dela respondida como "não soube / não quis / recusou" → parcial
+const SEM_RESPOSTA = ['Não soube informar', 'Não quis informar', 'Recusou a informar', 'Não sabe informar'];
+function statusSocio(r) {
+  if (!SO(r)) return {status: '', faltou: 0};
+  const iSocio = Q.findIndex(q => q.id === 'socio_aceitou');
+  const faltou = Q.slice(iSocio + 1).filter(q => ativa(q.id) && SEM_RESPOSTA.includes(r[q.id])).length;
+  return {status: faltou ? 'Respondeu parcialmente' : 'Respondeu todas as perguntas', faltou};
+}
 const DO_IMOVEL = ['relacao', 'matricula'];   // são do imóvel/CT, não da pessoa → nunca copia
 
 // ---- "copiar cadastro de outro acesso": busca a pessoa (servidor + histórico do celular) e preenche; o técnico vai confirmando tela por tela
@@ -808,7 +828,8 @@ function telaCopiar() {
   if (S.v.copiaItem) mostra([S.v.copiaItem], 'Cadastro escolhido:'); else if (r.copia_termo) atualiza();
   $('#busca').focus();
 }
-const ativa = id => { const q = QI[id]; return !!q && S.v.r.status === ACEITOU && (!q.quando || q.quando(S.v.r)); };
+const SOCIO_SEMPRE = ['socio_obs', 'assin_socio', 'assin_socio_motivo'];   // valem em qualquer status
+const ativa = id => { const q = QI[id]; return !!q && (S.v.r.status === ACEITOU || SOCIO_SEMPRE.includes(id)) && (!q.quando || q.quando(S.v.r)); };
 
 function multi(q) {                    // marcar vários; "Nenhum…" não combina com os outros
   const r = S.v.r; if (!Array.isArray(r[q.id])) r[q.id] = [];
@@ -852,7 +873,12 @@ function normaliza(q, v) {
 function perguntar(q) {
   const r = S.v.r, dica = typeof q.dica === 'function' ? q.dica(r) : (q.dica || '');
   if (typeof q.naoInf === 'function') q = {...q, naoInf: q.naoInf(r)};   // texto padrão que depende da resposta (ex.: socio "Não")
-  if (q.id === 'socio_obs' && r.socio_aceitou !== 'Sim' && (!r.socio_obs || r.socio_obs === 'Sem observações')) r.socio_obs = q.naoInf;   // já vem marcado: só confirmar
+  if (typeof q.titulo === 'function') q = {...q, titulo: q.titulo(r)};   // título que usa resposta anterior (ex.: 50% da renda em R$)
+  if (q.id === 'socio_obs') {            // texto padrão já vem marcado (só confirmar) e acompanha se o status/resposta mudar
+    const padroes = Object.values(OBS_SOCIO_PADRAO);
+    if (socioResp(r) !== 'Sim') { if (!r.socio_obs || padroes.includes(r.socio_obs)) r.socio_obs = q.naoInf; }
+    else if (padroes.includes(r.socio_obs) && r.socio_obs !== q.naoInf) delete r.socio_obs;
+  }
   if (q.tipo === 'escolha') return escolha(q.id, q.titulo, q.op, {dica});
   if (q.tipo === 'multi') return multi(q);
   if (q.tipo === 'foto') return foto(q.id, q.titulo, {min: typeof q.min === 'function' ? q.min(r) : (q.min || 0), dica});
@@ -1018,8 +1044,11 @@ function revisao() {
   const r = S.v.r, a = S.v.acesso;
   const quem = r.status !== ACEITOU ? '' : `<br>${esc(r.pf_pj)}: <b>${esc(PF(r) ? r.tit_nome : r.razao)}</b>${PF(r) && r.tit_cpf && ativa('tit_cpf') ? ' · CPF ' + esc(r.tit_cpf) : ''}${PJ(r) ? ' · CNPJ ' + esc(r.cnpj) : ''}` +
     `<br><b>${esc(situacaoDados(r).sit)}</b>${situacaoDados(r).recusou.length ? ' — não quis informar: ' + esc(situacaoDados(r).recusou.join(', ')) : ''}` +
-    (PF(r) ? `<br>Socioeconômica: ${esc(r.socio_aceitou)}${perCapita(r) != null ? ` · R$ ${brl(perCapita(r))} por pessoa (${faixaPC(r)})` : ''}` : '');
-  moldura('Revisar e salvar', `<div class="cartao"><b>${esc(a.codigo)}</b> · CT ${r.ct} · ${r.tentativa}ª visita<br>${esc(r.status)} · ${S.v.fotos.length} foto(s)${r.assinatura_svg ? ' · assinado' : ' · sem assinatura'}${quem}<br><small>${esc(r.obs)}</small></div>
+    (PF(r) && perCapita(r) != null ? `<br>R$ ${brl(perCapita(r))} por pessoa (${faixaPC(r)})` : '');
+  const socioTxt = `<br>Socioeconômica: <b>${esc(socioResp(r) || '—')}</b>` +
+    (SO(r) ? ` · ${statusSocio(r).status}${statusSocio(r).faltou ? ` (${statusSocio(r).faltou} pergunta(s) sem resposta)` : ''}` : '') +
+    (ninguem(r) ? '' : r.assin_socio ? ' · declarante assinou' : ' · declarante não assinou');
+  moldura('Revisar e salvar', `<div class="cartao"><b>${esc(a.codigo)}</b> · CT ${r.ct} · ${r.tentativa}ª visita<br>${esc(r.status)} · ${S.v.fotos.length} foto(s)${r.assinatura_svg ? ' · assinado' : ' · sem assinatura'}${quem}${socioTxt}<br><small>${esc(r.obs)}</small></div>
     <p class="dica">Ao salvar, a visita fica guardada no celular e é enviada quando tiver internet.</p>`);
   $('#seg').textContent = 'Salvar visita'; $('#seg').classList.add('ok');
   $('#seg').onclick = salvar;
@@ -1040,7 +1069,7 @@ async function salvar() {
     ...Object.fromEntries(Object.entries(COL).map(([k, c]) => [c, r[k] || ''])), 'Qual é a alternativa de acesso?': r.alternativa || '',
     'Observações da visita': r.obs, 'O cadastro será atualizado depois? Há algo pendente?': r.pendente || '',
     'O que está pendente? (documento, informação, retorno do morador…)': r.pendente_o_que || '',
-    motivo_sem_assinatura: r.assinatura_svg_nao ? (r.sem_assinatura || '') : '', 'Local e data': localData(a.municipio, new Date(S.v.inicio))};
+    motivo_sem_assinatura: ninguem(r) ? NINGUEM_ASSINA : r.assinatura_svg_nao ? (r.sem_assinatura || '') : '', 'Local e data': localData(a.municipio, new Date(S.v.inicio))};
   // parte 3: só grava o que está valendo (resposta de tela que deixou de existir ao voltar e trocar não entra)
   const v3 = id => { if (!ativa(id)) return ''; const x = r[id];
     return Array.isArray(x) ? x.join(', ') : (id.endsWith('_nasc') ? dataBR(x) : (x ?? '')); };
@@ -1049,23 +1078,23 @@ async function salvar() {
     motivo_sem_documento: situacaoDados(r).recusou.length ? 'Não quis informar: ' + situacaoDados(r).recusou.join(', ') : '',
     'Renda familiar per capita': PF(r) ? (faixaPC(r) || v3('renda_pc_pergunta')) : '',
     'Copiado de': r.copiar === COPIAR_SIM && r.copiado_de ? r.copiado_de : ''});
-  const socio = ativa('socio_aceitou') ? {'Código': a.codigo, 'CT Nº': r.ct, 'Data da visita': visita['Data da visita'],
-    ...Object.fromEntries(Object.entries(COL_SOCIO).map(([id, col]) => [col, v3(id)])), renda_per_capita: perCapita(r) ?? '',
+  // socio registrada em TODA visita: resposta automática pelo status (ou a escolhida por quem aceitou), observação e assinatura
+  const resp = socioResp(r);
+  const motivoAuto = st === 'Recusa' ? 'Não respondeu — visita com recusa' : st !== ACEITOU ? `Não se aplica — visita ${st === 'Abandonado / ruína' ? 'Abandonado' : st}`
+    : PJ(r) ? 'Não se aplica (pessoa jurídica)' : '';
+  const socio = resp ? {'Código': a.codigo, 'CT Nº': r.ct, 'Data da visita': visita['Data da visita'],
+    ...Object.fromEntries(Object.entries(COL_SOCIO).map(([id, col]) => [col, v3(id)])), 'Aceitou responder a ficha socioeconômica?': resp,
+    [COL_STATUS_SOCIO]: statusSocio(r).status, renda_per_capita: perCapita(r) ?? '',
     'Observações (socioeconômica)': [v3('socio_obs'), v3('assin_socio_motivo') && `(declarante não assinou: ${v3('assin_socio_motivo')})`].filter(Boolean).join(' '),
-    motivo_nao_respondeu: r.socio_aceitou !== 'Sim' ? v3('socio_obs') : '',
-    'Local e data': visita['Local e data']} : null;
-  // sem entrevista de pessoa física (ausente, recusa, abandonado ou pessoa jurídica) → socio registrada sozinha como "Não se aplica"
-  const naoSeAplica = st !== ACEITOU ? `Não se aplica — visita ${st === 'Abandonado / ruína' ? 'Abandonado' : st}` : (PJ(r) ? 'Não se aplica (pessoa jurídica)' : '');
-  const socioFinal = socio || (naoSeAplica ? {'Código': a.codigo, 'CT Nº': r.ct, 'Data da visita': visita['Data da visita'],
-    'Aceitou responder a ficha socioeconômica?': 'Não se aplica', motivo_nao_respondeu: naoSeAplica, 'Observações (socioeconômica)': naoSeAplica,
-    'Local e data': visita['Local e data']} : null);
+    motivo_nao_respondeu: resp !== 'Sim' ? (motivoAuto || v3('socio_obs')) : '',
+    'Local e data': visita['Local e data']} : null, socioFinal = socio;
   // arquivos: só de telas que valem (foto do aviso / documentos de tela abandonada não sobem)
   const telas = new Set(PASSOS());
   const fotoVale = f => f.tipo === 'foto_acesso' || (f.tipo === 'foto_aviso' && telas.has('foto_aviso')) || (f.tipo === 'docs' && telas.has('docs'));
   const arquivos = S.v.fotos.filter(fotoVale).map(f => ({tipo: f.tipo === 'docs' ? 'documento' : f.tipo, mime: f.mime, base64: f.base64,
     tirada_em: f.tirada_em, gps_lat: f.gps_lat, gps_lon: f.gps_lon, gps_precisao_m: f.gps_precisao_m, gps_idade_s: f.gps_idade_s, gps_aviso: f.gps_aviso || ''}));
   const svg = s => btoa(unescape(encodeURIComponent(s)));
-  if (r.assinatura_svg) arquivos.push({tipo: 'assinatura', mime: 'image/svg+xml', base64: svg(r.assinatura_svg)});
+  if (r.assinatura_svg && !ninguem(r)) arquivos.push({tipo: 'assinatura', mime: 'image/svg+xml', base64: svg(r.assinatura_svg)});   // assinatura de antes de trocar p/ ausente não sobe
   if (socio && ativa('assin_socio') && r.assin_socio) arquivos.push({tipo: 'assinatura_socio', mime: 'image/svg+xml', base64: svg(r.assin_socio)});
   await DB.filaPor({id_envio: S.v.id, visita, socio: socioFinal, arquivos, token: S.token, tecnico: S.tecnico, salvo_em: new Date().toISOString()});
   await descartarRascunho();           // já está na fila de envio: o rascunho não é mais necessário
